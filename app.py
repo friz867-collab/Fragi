@@ -170,9 +170,12 @@ session.headers.update({
 })
 player_guild_cache = {}
 
-# Zmienne bufora
-frag_buffer = []
-buffer_start_time = None
+# === ZMIENNE STANU BITKI ===
+is_bitka_active = False          # Czy trwa obecnie bitka?
+bitka_buffer = []               # Wszystkie fragi z obecnej bitki
+pre_bitka_buffer = []           # Fragi przed osiągnięciem progu 5
+last_frag_time = None           # Czas ostatniego fraga
+bitka_start_time = None          # Czas rozpoczęcia bitki
 
 
 def fetch_guild_from_profile(player_name):
@@ -254,39 +257,133 @@ def parse_frag_line(row_element):
     return None, None
 
 
-async def trigger_bitka_alert(channel):
-    global frag_buffer, buffer_start_time
-    if not frag_buffer:
-        return
-
+async def send_bitka_start(channel):
+    """Wysyła PIERWSZY i JEDYNY ping na start bitki."""
     role = discord.utils.get(channel.guild.roles, name="bitka")
     role_mention = role.mention if role else "@bitka"
 
     embed = discord.Embed(
-        title=f"🔥 GORĄCA BITKA! ({len(frag_buffer)} fragów w krótkim czasie)",
+        title="⚔️ ROZPOCZĘŁA SIĘ BITKA!",
+        description="Wpadła seria zabójstw! Bot śledzi akcję – pełne podsumowanie pojawi się po zakończeniu starcia.",
         color=discord.Color.red(),
         timestamp=datetime.now(timezone.utc)
     )
 
-    lines = []
-    for killer, killer_guild, victim, victim_guild in frag_buffer:
-        lines.append(f"• **{killer}** (*{killer_guild}*) ⚔️ **{victim}** (*{victim_guild}*)")
+    lines = [f"• **{k}** (*{kg}*) ⚔️ **{v}** (*{vg}*)" for k, kg, v, vg in bitka_buffer[:5]]
+    embed.add_field(name="Początkowe starcia", value="\n".join(lines), inline=False)
 
-    content_text = "\n".join(lines)
-    if len(content_text) > 1024:
-        content_text = content_text[:1000] + "\n...i więcej."
-
-    embed.add_field(name="Zabójstwa w akcji", value=content_text, inline=False)
     await channel.send(content=f"🚨 {role_mention} Właśnie trwa bitka!", embed=embed)
 
-    # Reset bufora po pingu
-    frag_buffer.clear()
-    buffer_start_time = None
+
+async def send_bitka_summary(channel):
+    """Wysyła podsumowanie KOŃCOWE w tradycyjnym formacie tekstowym."""
+    global is_bitka_active, bitka_buffer, last_frag_time, bitka_start_time
+
+    if not bitka_buffer:
+        return
+
+    total_frags = len(bitka_buffer)
+
+    guild_stats = {}   # {guild: [frags, kills, deaths]}
+    player_stats = {}  # {player: [guild, frags, kills, deaths]}
+    guild_members = {} # {guild: set(players)}
+
+    for killer, killer_guild, victim, victim_guild in bitka_buffer:
+        # Inicjalizacja struktur danych
+        for g in [killer_guild, victim_guild]:
+            if g not in guild_stats:
+                guild_stats[g] = [0, 0, 0]
+            if g not in guild_members:
+                guild_members[g] = set()
+
+        if killer not in player_stats:
+            player_stats[killer] = [killer_guild, 0, 0, 0]
+        if victim not in player_stats:
+            player_stats[victim] = [victim_guild, 0, 0, 0]
+
+        guild_members[killer_guild].add(killer)
+        guild_members[victim_guild].add(victim)
+
+        # Zabójca (Frags +1, Kills +1)
+        guild_stats[killer_guild][0] += 1
+        guild_stats[killer_guild][1] += 1
+        player_stats[killer][1] += 1
+        player_stats[killer][2] += 1
+
+        # Ofiara (Deaths +1)
+        guild_stats[victim_guild][2] += 1
+        player_stats[victim][3] += 1
+
+    # MVP - gracz z największą liczbą zabić
+    mvp_player = "Brak"
+    max_kills = -1
+    for p_name, data in player_stats.items():
+        if data[2] > max_kills:
+            max_kills = data[2]
+            mvp_player = p_name
+
+    # Generowanie dat
+    start_str = bitka_start_time.strftime("%Y.%m.%d %H:%M:%S") if bitka_start_time else "N/A"
+    end_str = datetime.now().strftime("%H:%M:%S")
+
+    # Formatowanie raportu
+    report = []
+    report.append("LAST BATTLE REPORT")
+    report.append("━" * 60)
+    report.append(f"PODSUMOWANIE OSTATNIEJ BITKI {start_str} → {end_str} Fragi: {total_frags} MVP: {mvp_player}")
+    report.append("")
+    report.append("━" * 60)
+    report.append("GILDIE:")
+
+    sorted_guilds = sorted(guild_stats.items(), key=lambda x: x[1][0], reverse=True)
+    for g_name, stat in sorted_guilds:
+        report.append(f"• {g_name:<20} |  {stat[0]}  {stat[1]}  {stat[2]}")
+
+    report.append("")
+    report.append("━" * 60)
+    report.append("GRACZE:")
+
+    sorted_players = sorted(player_stats.items(), key=lambda x: x[1][2], reverse=True)
+    for p_name, data in sorted_players:
+        report.append(f"{p_name} ({data[0]}) |  {data[1]}  {data[2]}  {data[3]}")
+
+    report.append("━" * 60)
+    report.append("")
+    report.append(" BATTLE — UCZESTNICY GILDII")
+    report.append("━" * 60)
+    report.append("SKŁADY GILDII — OSTATNIA BITWA:")
+    report.append("")
+
+    for g_name, members in sorted_guilds:
+        m_list = guild_members[g_name]
+        names_str = ", ".join(sorted(m_list))
+        report.append(f"• {g_name} ({len(m_list)}): {names_str}")
+        report.append("")
+
+    report.append("━" * 60)
+
+    full_text = "\n".join(report)
+
+    # Dzielenie długiej wiadomości na części (limit 2000 znaków w Discordzie)
+    if len(full_text) > 1900:
+        chunks = [full_text[i:i + 1800] for i in range(0, len(full_text), 1800)]
+        for chunk in chunks:
+            await channel.send(f"```text\n{chunk}\n```")
+    else:
+        await channel.send(f"```text\n{full_text}\n```")
+
+    # Resetowanie zmiennych
+    is_bitka_active = False
+    bitka_buffer.clear()
+    pre_bitka_buffer.clear()
+    last_frag_time = None
+    bitka_start_time = None
 
 
 @tasks.loop(seconds=5)
 async def check_frags():
-    global frag_buffer, buffer_start_time
+    global is_bitka_active, bitka_buffer, pre_bitka_buffer, last_frag_time, bitka_start_time
+
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
@@ -295,6 +392,8 @@ async def check_frags():
         res = session.get(URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
         rows = list(soup.find_all("tr"))
+
+        now = datetime.now(timezone.utc)
 
         for row in reversed(rows):
             row_text = row.get_text(strip=True)
@@ -309,30 +408,34 @@ async def check_frags():
 
                     record_kill_and_death(killer, killer_guild, victim, victim_guild)
 
-                    now = datetime.now(timezone.utc)
+                    frag_data = (killer, killer_guild, victim, victim_guild)
+                    last_frag_time = now
 
-                    # Resetuj bufor, jeśli od pierwszego fraga minęły już 3 minuty
-                    if buffer_start_time is not None and (now - buffer_start_time).total_seconds() > 180:
-                        frag_buffer.clear()
-                        buffer_start_time = None
+                    if is_bitka_active:
+                        bitka_buffer.append(frag_data)
+                    else:
+                        pre_bitka_buffer.append(frag_data)
 
-                    if buffer_start_time is None:
-                        buffer_start_time = now
-
-                    frag_buffer.append((killer, killer_guild, victim, victim_guild))
-
-                    # ODRADZA NATYCHMIAST: Jeśli dobiliśmy do 5 fragów w ciągu okna 3 minut
-                    if len(frag_buffer) >= 5:
-                        await trigger_bitka_alert(channel)
+                        # Gdy wpadnie przynajmniej 5 fragów w oknie czasowym
+                        if len(pre_bitka_buffer) >= 5:
+                            is_bitka_active = True
+                            bitka_start_time = datetime.now()
+                            bitka_buffer = list(pre_bitka_buffer)
+                            pre_bitka_buffer.clear()
+                            await send_bitka_start(channel)
 
                 mark_frag_processed(row_text)
 
-        # Wyczyszczenie starego bufora, jeśli upłynęły 3 minuty i nie dobito do 5 fragów
-        if buffer_start_time is not None:
-            now = datetime.now(timezone.utc)
-            if (now - buffer_start_time).total_seconds() > 180:
-                frag_buffer.clear()
-                buffer_start_time = None
+        # 1. Kasowanie wstępnego bufora po 3 minutach bez 5 fragów
+        if not is_bitka_active and last_frag_time:
+            if (now - last_frag_time).total_seconds() > 180:
+                pre_bitka_buffer.clear()
+                last_frag_time = None
+
+        # 2. Wykrywanie końca bitki po 10 minutach (600 sek) braku zabójstw
+        if is_bitka_active and last_frag_time:
+            if (now - last_frag_time).total_seconds() >= 600:
+                await send_bitka_summary(channel)
 
     except Exception as e:
         print(f"Błąd pętli: {e}")

@@ -2,7 +2,6 @@ import os
 import re
 import sqlite3
 import urllib.parse
-from collections import defaultdict
 from datetime import datetime, timezone
 from threading import Thread
 
@@ -13,29 +12,24 @@ from dotenv import load_dotenv
 from flask import Flask
 import requests
 
-# Zmienna czasu startu bota
 start_time = None
 
-# Wczytanie zmiennych środowiskowych z pliku .env
 load_dotenv()
-
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 
-# === BAZA DANYCH SQLITE (TRWAŁE PRZECHOWYWANIE DANYCH) ===
+# === BAZA DANYCH SQLITE ===
 DB_NAME = "bot_data.db"
 
+
 def init_db():
-    """Tworzy tabele w bazie danych, jeśli jeszcze nie istnieją."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS processed_frags (
             frag_hash TEXT PRIMARY KEY
         )
     """)
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS player_stats (
             player_name TEXT PRIMARY KEY,
@@ -44,7 +38,6 @@ def init_db():
             deaths INTEGER DEFAULT 0
         )
     """)
-    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS frag_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,9 +46,9 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
     conn.commit()
     conn.close()
+
 
 def is_frag_processed(frag_text):
     conn = sqlite3.connect(DB_NAME)
@@ -65,6 +58,7 @@ def is_frag_processed(frag_text):
     conn.close()
     return row is not None
 
+
 def mark_frag_processed(frag_text):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -72,11 +66,10 @@ def mark_frag_processed(frag_text):
     conn.commit()
     conn.close()
 
+
 def record_kill_and_death(killer, killer_guild, victim, victim_guild):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    
-    # Aktualizacja zabójcy
     cursor.execute("""
         INSERT INTO player_stats (player_name, guild_name, kills, deaths)
         VALUES (?, ?, 1, 0)
@@ -84,8 +77,6 @@ def record_kill_and_death(killer, killer_guild, victim, victim_guild):
             guild_name = excluded.guild_name,
             kills = kills + 1
     """, (killer, killer_guild))
-    
-    # Aktualizacja ofiary
     cursor.execute("""
         INSERT INTO player_stats (player_name, guild_name, kills, deaths)
         VALUES (?, ?, 0, 1)
@@ -93,21 +84,17 @@ def record_kill_and_death(killer, killer_guild, victim, victim_guild):
             guild_name = excluded.guild_name,
             deaths = deaths + 1
     """, (victim, victim_guild))
-    
-    # Historia dla zabójcy
     cursor.execute("""
         INSERT INTO frag_history (player_name, entry_text)
         VALUES (?, ?)
     """, (killer, f"⚔️ Zabił {victim} ({victim_guild})"))
-    
-    # Historia dla ofiary
     cursor.execute("""
         INSERT INTO frag_history (player_name, entry_text)
         VALUES (?, ?)
     """, (victim, f"💀 Zginął od {killer} ({killer_guild})"))
-    
     conn.commit()
     conn.close()
+
 
 def get_top_guilds_data():
     conn = sqlite3.connect(DB_NAME)
@@ -124,6 +111,7 @@ def get_top_guilds_data():
     conn.close()
     return rows
 
+
 def get_player_data(player_name):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -133,7 +121,6 @@ def get_player_data(player_name):
         WHERE LOWER(player_name) = LOWER(?)
     """, (player_name,))
     player_row = cursor.fetchone()
-    
     history_rows = []
     if player_row:
         exact_name = player_row[0]
@@ -143,34 +130,36 @@ def get_player_data(player_name):
             ORDER BY id DESC LIMIT 5
         """, (exact_name,))
         history_rows = [r[0] for r in cursor.fetchall()]
-        
     conn.close()
     return player_row, history_rows
 
-# Inicjalizacja bazy danych przy starcie skryptu
+
 init_db()
 
-# === SERWER DUMMY DLA RENDER WEB SERVICE ===
+# === SERWER HTTP DLA RENDER ===
 web_app = Flask('')
+
 
 @web_app.route('/')
 def home():
     return "Bot is alive!"
 
+
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host='0.0.0.0', port=port)
+
 
 def keep_alive():
     t = Thread(target=run_web)
     t.daemon = True
     t.start()
 
+
 keep_alive()
 
 # === KONFIGURACJA BOTA ===
 URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"
-
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -179,8 +168,12 @@ session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 })
-
 player_guild_cache = {}
+
+# Zmienne bufora
+frag_buffer = []
+buffer_start_time = None
+
 
 def fetch_guild_from_profile(player_name):
     player_name = player_name.strip()
@@ -228,6 +221,7 @@ def fetch_guild_from_profile(player_name):
     except Exception:
         return "Bez Gildii"
 
+
 def parse_frag_line(row_element):
     try:
         char_links = []
@@ -259,8 +253,40 @@ def parse_frag_line(row_element):
         pass
     return None, None
 
+
+async def trigger_bitka_alert(channel):
+    global frag_buffer, buffer_start_time
+    if not frag_buffer:
+        return
+
+    role = discord.utils.get(channel.guild.roles, name="bitka")
+    role_mention = role.mention if role else "@bitka"
+
+    embed = discord.Embed(
+        title=f"🔥 GORĄCA BITKA! ({len(frag_buffer)} fragów w krótkim czasie)",
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    lines = []
+    for killer, killer_guild, victim, victim_guild in frag_buffer:
+        lines.append(f"• **{killer}** (*{killer_guild}*) ⚔️ **{victim}** (*{victim_guild}*)")
+
+    content_text = "\n".join(lines)
+    if len(content_text) > 1024:
+        content_text = content_text[:1000] + "\n...i więcej."
+
+    embed.add_field(name="Zabójstwa w akcji", value=content_text, inline=False)
+    await channel.send(content=f"🚨 {role_mention} Właśnie trwa bitka!", embed=embed)
+
+    # Reset bufora po pingu
+    frag_buffer.clear()
+    buffer_start_time = None
+
+
 @tasks.loop(seconds=5)
 async def check_frags():
+    global frag_buffer, buffer_start_time
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
@@ -281,18 +307,36 @@ async def check_frags():
                     killer_guild = fetch_guild_from_profile(killer)
                     victim_guild = fetch_guild_from_profile(victim)
 
-                    # Zapis do bazy danych SQLite
                     record_kill_and_death(killer, killer_guild, victim, victim_guild)
 
-                    embed = discord.Embed(title="⚔️ Nowy Frag!", color=discord.Color.red())
-                    embed.add_field(name="Zabójca", value=f"**{killer}**\n*({killer_guild})*", inline=True)
-                    embed.add_field(name="Ofiara", value=f"**{victim}**\n*({victim_guild})*", inline=True)
+                    now = datetime.now(timezone.utc)
 
-                    await channel.send(embed=embed)
+                    # Resetuj bufor, jeśli od pierwszego fraga minęły już 3 minuty
+                    if buffer_start_time is not None and (now - buffer_start_time).total_seconds() > 180:
+                        frag_buffer.clear()
+                        buffer_start_time = None
+
+                    if buffer_start_time is None:
+                        buffer_start_time = now
+
+                    frag_buffer.append((killer, killer_guild, victim, victim_guild))
+
+                    # ODRADZA NATYCHMIAST: Jeśli dobiliśmy do 5 fragów w ciągu okna 3 minut
+                    if len(frag_buffer) >= 5:
+                        await trigger_bitka_alert(channel)
 
                 mark_frag_processed(row_text)
+
+        # Wyczyszczenie starego bufora, jeśli upłynęły 3 minuty i nie dobito do 5 fragów
+        if buffer_start_time is not None:
+            now = datetime.now(timezone.utc)
+            if (now - buffer_start_time).total_seconds() > 180:
+                frag_buffer.clear()
+                buffer_start_time = None
+
     except Exception as e:
         print(f"Błąd pętli: {e}")
+
 
 @bot.event
 async def on_ready():
@@ -313,36 +357,29 @@ async def on_ready():
 
     check_frags.start()
 
+
 @bot.command(name="top")
 async def top_guilds(ctx):
-    """Wyświetla ranking gildii po wpisaniu !top"""
     top_guilds_list = get_top_guilds_data()
     if not top_guilds_list:
         await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
         return
 
-    embed = discord.Embed(title="🏆 Ranking Gildii (Trwały)", color=discord.Color.gold())
-
+    embed = discord.Embed(title="🏆 Ranking Gildii", color=discord.Color.gold())
     for guild, kills, deaths in top_guilds_list:
-        embed.add_field(
-            name=f"🛡️ {guild}",
-            value=f"Kills: `{kills}` | Deaths: `{deaths}`",
-            inline=False
-        )
+        embed.add_field(name=f"🛡️ {guild}", value=f"Kills: `{kills}` | Deaths: `{deaths}`", inline=False)
 
     await ctx.send(embed=embed)
 
+
 @bot.command(name="gracz")
 async def player_info(ctx, *, player_name: str):
-    """Wyświetla statystyki i historię gracza po wpisaniu np. !gracz Macro Tommy"""
     player_row, history = get_player_data(player_name)
-
     if not player_row:
         await ctx.send(f"Nie znaleziono danych dla gracza **{player_name}**.")
         return
 
     exact_name, guild, kills, deaths = player_row
-
     embed = discord.Embed(title=f"👤 Statystyki: {exact_name}", color=discord.Color.blue())
     embed.add_field(name="Gildia", value=guild, inline=True)
     embed.add_field(name="Kills / Deaths", value=f"`{kills}` / `{deaths}`", inline=True)
@@ -354,38 +391,26 @@ async def player_info(ctx, *, player_name: str):
 
     await ctx.send(embed=embed)
 
+
 @bot.command(name="status")
 async def status(ctx):
-    """Wyświetla status bota oraz czas jego ciągłego działania."""
     if start_time is None:
         await ctx.send("Bot dopiero się uruchamia...")
         return
 
     now = datetime.now(timezone.utc)
     uptime = now - start_time
-
     dni = uptime.days
     godziny, remainder = divmod(uptime.seconds, 3600)
     minuty, sekundy = divmod(remainder, 60)
 
-    embed = discord.Embed(
-        title="📊 Status Bota",
-        color=discord.Color.green(),
-        timestamp=now,
-    )
+    embed = discord.Embed(title="📊 Status Bota", color=discord.Color.green(), timestamp=now)
     embed.add_field(name="Stan", value="🟢 Online (24/7)", inline=False)
-    embed.add_field(
-        name="Czas działania (Uptime)",
-        value=f"{dni}d {godziny}h {minuty}m {sekundy}s",
-        inline=False,
-    )
-    embed.add_field(
-        name="Opóźnienie (Ping)",
-        value=f"{round(bot.latency * 1000)} ms",
-        inline=False,
-    )
+    embed.add_field(name="Czas działania (Uptime)", value=f"{dni}d {godziny}h {minuty}m {sekundy}s", inline=False)
+    embed.add_field(name="Opóźnienie (Ping)", value=f"{round(bot.latency * 1000)} ms", inline=False)
     embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
 
     await ctx.send(embed=embed)
+
 
 bot.run(DISCORD_TOKEN)

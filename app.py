@@ -2,11 +2,17 @@ import os
 import re
 import urllib.parse
 from collections import defaultdict
-import requests
+from datetime import datetime, timezone
+from threading import Thread
+
 from bs4 import BeautifulSoup
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+from flask import Flask
+import requests
+
+# Zmienna czasu startu
 start_time = None
 
 # Wczytanie zmiennych środowiskowych z pliku .env
@@ -15,12 +21,31 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 
-# ... reszta Twojego kodu ...
+# === SERWER DUMMY DLA RENDER WEB SERVICE ===
+web_app = Flask('')
 
-# === KONFIGURACJA ===
+
+@web_app.route('/')
+def home():
+    return "Bot is alive!"
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
+
+
+keep_alive()
+
+# === KONFIGURACJA BOTA ===
 URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"
 
-# Ustawienia bota
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -35,6 +60,7 @@ guild_stats = defaultdict(lambda: {"kills": 0, "deaths": 0})
 player_stats = defaultdict(lambda: {"guild": "Bez Gildii", "kills": 0, "deaths": 0})
 player_history = defaultdict(list)
 processed_frags = set()
+
 
 def fetch_guild_from_profile(player_name):
     player_name = player_name.strip()
@@ -82,6 +108,7 @@ def fetch_guild_from_profile(player_name):
     except Exception:
         return "Bez Gildii"
 
+
 def parse_frag_line(row_element):
     try:
         char_links = []
@@ -113,7 +140,7 @@ def parse_frag_line(row_element):
         pass
     return None, None
 
-# Pętla sprawdzająca nowe fragi w tle (co 5 sekund)
+
 @tasks.loop(seconds=5)
 async def check_frags():
     channel = bot.get_channel(CHANNEL_ID)
@@ -147,27 +174,24 @@ async def check_frags():
                     player_history[killer].append(f"⚔️ Zabił {victim} ({victim_guild})")
                     player_history[victim].append(f"💀 Zginął od {killer} ({killer_guild})")
 
-                    # Wysyłanie wiadomości na Discord
                     embed = discord.Embed(title="⚔️ Nowy Frag!", color=discord.Color.red())
                     embed.add_field(name="Zabójca", value=f"**{killer}**\n*({killer_guild})*", inline=True)
                     embed.add_field(name="Ofiara", value=f"**{victim}**\n*({victim_guild})*", inline=True)
-                    
+
                     await channel.send(embed=embed)
 
                 processed_frags.add(row_text)
     except Exception as e:
         print(f"Błąd pętli: {e}")
 
-@bot.event
+
 @bot.event
 async def on_ready():
     global start_time
     if start_time is None:
         start_time = datetime.now(timezone.utc)
     print(f"Zalogowano jako {bot.user.name}")
-    # ... tu zostaw swój dotychczasowy kod z on_ready (np. odpalanie pętli tasków) ...
-    
-    # Inicjalizacja obecnych fragów (żeby nie wysyłać powiadomień o starych)
+
     try:
         res = session.get(URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
@@ -180,7 +204,6 @@ async def on_ready():
 
     check_frags.start()
 
-# === KOMENDY DLA UŻYTKOWNIKÓW NA DISCORDZIE ===
 
 @bot.command(name="top")
 async def top_guilds(ctx):
@@ -201,10 +224,10 @@ async def top_guilds(ctx):
 
     await ctx.send(embed=embed)
 
+
 @bot.command(name="gracz")
 async def player_info(ctx, *, player_name: str):
     """Wyświetla statystyki i historię gracza po wpisaniu np. !gracz Macro Tommy"""
-    # Dopasowanie nazwy gracza bez względu na wielkość liter
     matched_player = None
     for p in player_stats.keys():
         if p.lower() == player_name.lower():
@@ -216,19 +239,21 @@ async def player_info(ctx, *, player_name: str):
         return
 
     data = player_stats[matched_player]
-    history = player_history.get(matched_player, [])[-5:]  # Ostatnie 5 wpisów
+    history = player_history.get(matched_player, [])[-5:]
 
     embed = discord.Embed(title=f"👤 Statystyki: {matched_player}", color=discord.Color.blue())
     embed.add_field(name="Gildia", value=data["guild"], inline=True)
     embed.add_field(name="Kills / Deaths", value=f"`{data['kills']}` / `{data['deaths']}`", inline=True)
-    
+
     if history:
         embed.add_field(name="Ostatnie starcia", value="\n".join(history), inline=False)
     else:
         embed.add_field(name="Ostatnie starcia", value="Brak wpisów", inline=False)
 
     await ctx.send(embed=embed)
-    @bot.command(name="status")
+
+
+@bot.command(name="status")
 async def status(ctx):
     """Wyświetla status bota oraz czas jego ciągłego działania."""
     if start_time is None:
@@ -261,5 +286,6 @@ async def status(ctx):
     embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
 
     await ctx.send(embed=embed)
+
 
 bot.run(DISCORD_TOKEN)

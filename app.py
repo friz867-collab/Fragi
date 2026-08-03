@@ -1,5 +1,6 @@
 import os
 import re
+import sqlite3
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 from flask import Flask
 import requests
 
-# Zmienna czasu startu
+# Zmienna czasu startu bota
 start_time = None
 
 # Wczytanie zmiennych środowiskowych z pliku .env
@@ -21,25 +22,149 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 
+# === BAZA DANYCH SQLITE (TRWAŁE PRZECHOWYWANIE DANYCH) ===
+DB_NAME = "bot_data.db"
+
+def init_db():
+    """Tworzy tabele w bazie danych, jeśli jeszcze nie istnieją."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS processed_frags (
+            frag_hash TEXT PRIMARY KEY
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS player_stats (
+            player_name TEXT PRIMARY KEY,
+            guild_name TEXT,
+            kills INTEGER DEFAULT 0,
+            deaths INTEGER DEFAULT 0
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS frag_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT,
+            entry_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+
+def is_frag_processed(frag_text):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM processed_frags WHERE frag_hash = ?", (frag_text,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+def mark_frag_processed(frag_text):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO processed_frags (frag_hash) VALUES (?)", (frag_text,))
+    conn.commit()
+    conn.close()
+
+def record_kill_and_death(killer, killer_guild, victim, victim_guild):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Aktualizacja zabójcy
+    cursor.execute("""
+        INSERT INTO player_stats (player_name, guild_name, kills, deaths)
+        VALUES (?, ?, 1, 0)
+        ON CONFLICT(player_name) DO UPDATE SET
+            guild_name = excluded.guild_name,
+            kills = kills + 1
+    """, (killer, killer_guild))
+    
+    # Aktualizacja ofiary
+    cursor.execute("""
+        INSERT INTO player_stats (player_name, guild_name, kills, deaths)
+        VALUES (?, ?, 0, 1)
+        ON CONFLICT(player_name) DO UPDATE SET
+            guild_name = excluded.guild_name,
+            deaths = deaths + 1
+    """, (victim, victim_guild))
+    
+    # Historia dla zabójcy
+    cursor.execute("""
+        INSERT INTO frag_history (player_name, entry_text)
+        VALUES (?, ?)
+    """, (killer, f"⚔️ Zabił {victim} ({victim_guild})"))
+    
+    # Historia dla ofiary
+    cursor.execute("""
+        INSERT INTO frag_history (player_name, entry_text)
+        VALUES (?, ?)
+    """, (victim, f"💀 Zginął od {killer} ({killer_guild})"))
+    
+    conn.commit()
+    conn.close()
+
+def get_top_guilds_data():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT guild_name, SUM(kills) as total_kills, SUM(deaths) as total_deaths
+        FROM player_stats
+        WHERE guild_name != 'Bez Gildii'
+        GROUP BY guild_name
+        ORDER BY total_kills DESC
+        LIMIT 10
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def get_player_data(player_name):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT player_name, guild_name, kills, deaths
+        FROM player_stats
+        WHERE LOWER(player_name) = LOWER(?)
+    """, (player_name,))
+    player_row = cursor.fetchone()
+    
+    history_rows = []
+    if player_row:
+        exact_name = player_row[0]
+        cursor.execute("""
+            SELECT entry_text FROM frag_history
+            WHERE player_name = ?
+            ORDER BY id DESC LIMIT 5
+        """, (exact_name,))
+        history_rows = [r[0] for r in cursor.fetchall()]
+        
+    conn.close()
+    return player_row, history_rows
+
+# Inicjalizacja bazy danych przy starcie skryptu
+init_db()
+
 # === SERWER DUMMY DLA RENDER WEB SERVICE ===
 web_app = Flask('')
-
 
 @web_app.route('/')
 def home():
     return "Bot is alive!"
 
-
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     web_app.run(host='0.0.0.0', port=port)
-
 
 def keep_alive():
     t = Thread(target=run_web)
     t.daemon = True
     t.start()
-
 
 keep_alive()
 
@@ -56,11 +181,6 @@ session.headers.update({
 })
 
 player_guild_cache = {}
-guild_stats = defaultdict(lambda: {"kills": 0, "deaths": 0})
-player_stats = defaultdict(lambda: {"guild": "Bez Gildii", "kills": 0, "deaths": 0})
-player_history = defaultdict(list)
-processed_frags = set()
-
 
 def fetch_guild_from_profile(player_name):
     player_name = player_name.strip()
@@ -108,7 +228,6 @@ def fetch_guild_from_profile(player_name):
     except Exception:
         return "Bez Gildii"
 
-
 def parse_frag_line(row_element):
     try:
         char_links = []
@@ -140,7 +259,6 @@ def parse_frag_line(row_element):
         pass
     return None, None
 
-
 @tasks.loop(seconds=5)
 async def check_frags():
     channel = bot.get_channel(CHANNEL_ID)
@@ -157,22 +275,14 @@ async def check_frags():
             if not row_text or len(row_text) < 10:
                 continue
 
-            if row_text not in processed_frags:
+            if not is_frag_processed(row_text):
                 killer, victim = parse_frag_line(row)
                 if killer and victim:
                     killer_guild = fetch_guild_from_profile(killer)
                     victim_guild = fetch_guild_from_profile(victim)
 
-                    player_stats[killer]["guild"] = killer_guild
-                    player_stats[killer]["kills"] += 1
-                    player_stats[victim]["guild"] = victim_guild
-                    player_stats[victim]["deaths"] += 1
-
-                    guild_stats[killer_guild]["kills"] += 1
-                    guild_stats[victim_guild]["deaths"] += 1
-
-                    player_history[killer].append(f"⚔️ Zabił {victim} ({victim_guild})")
-                    player_history[victim].append(f"💀 Zginął od {killer} ({killer_guild})")
+                    # Zapis do bazy danych SQLite
+                    record_kill_and_death(killer, killer_guild, victim, victim_guild)
 
                     embed = discord.Embed(title="⚔️ Nowy Frag!", color=discord.Color.red())
                     embed.add_field(name="Zabójca", value=f"**{killer}**\n*({killer_guild})*", inline=True)
@@ -180,10 +290,9 @@ async def check_frags():
 
                     await channel.send(embed=embed)
 
-                processed_frags.add(row_text)
+                mark_frag_processed(row_text)
     except Exception as e:
         print(f"Błąd pętli: {e}")
-
 
 @bot.event
 async def on_ready():
@@ -198,52 +307,45 @@ async def on_ready():
         for row in soup.find_all("tr"):
             row_text = row.get_text(strip=True)
             if row_text:
-                processed_frags.add(row_text)
+                mark_frag_processed(row_text)
     except Exception:
         pass
 
     check_frags.start()
 
-
 @bot.command(name="top")
 async def top_guilds(ctx):
     """Wyświetla ranking gildii po wpisaniu !top"""
-    if not guild_stats:
-        await ctx.send("Brak zarejestrowanych zabójstw od startu bota.")
+    top_guilds_list = get_top_guilds_data()
+    if not top_guilds_list:
+        await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
         return
 
-    embed = discord.Embed(title="🏆 Ranking Gildii", color=discord.Color.gold())
-    sorted_guilds = sorted(guild_stats.items(), key=lambda x: x[1]["kills"], reverse=True)
+    embed = discord.Embed(title="🏆 Ranking Gildii (Trwały)", color=discord.Color.gold())
 
-    for guild, data in sorted_guilds[:10]:
+    for guild, kills, deaths in top_guilds_list:
         embed.add_field(
             name=f"🛡️ {guild}",
-            value=f"Kills: `{data['kills']}` | Deaths: `{data['deaths']}`",
+            value=f"Kills: `{kills}` | Deaths: `{deaths}`",
             inline=False
         )
 
     await ctx.send(embed=embed)
 
-
 @bot.command(name="gracz")
 async def player_info(ctx, *, player_name: str):
     """Wyświetla statystyki i historię gracza po wpisaniu np. !gracz Macro Tommy"""
-    matched_player = None
-    for p in player_stats.keys():
-        if p.lower() == player_name.lower():
-            matched_player = p
-            break
+    player_row, history = get_player_data(player_name)
 
-    if not matched_player:
+    if not player_row:
         await ctx.send(f"Nie znaleziono danych dla gracza **{player_name}**.")
         return
 
-    data = player_stats[matched_player]
-    history = player_history.get(matched_player, [])[-5:]
+    exact_name, guild, kills, deaths = player_row
 
-    embed = discord.Embed(title=f"👤 Statystyki: {matched_player}", color=discord.Color.blue())
-    embed.add_field(name="Gildia", value=data["guild"], inline=True)
-    embed.add_field(name="Kills / Deaths", value=f"`{data['kills']}` / `{data['deaths']}`", inline=True)
+    embed = discord.Embed(title=f"👤 Statystyki: {exact_name}", color=discord.Color.blue())
+    embed.add_field(name="Gildia", value=guild, inline=True)
+    embed.add_field(name="Kills / Deaths", value=f"`{kills}` / `{deaths}`", inline=True)
 
     if history:
         embed.add_field(name="Ostatnie starcia", value="\n".join(history), inline=False)
@@ -251,7 +353,6 @@ async def player_info(ctx, *, player_name: str):
         embed.add_field(name="Ostatnie starcia", value="Brak wpisów", inline=False)
 
     await ctx.send(embed=embed)
-
 
 @bot.command(name="status")
 async def status(ctx):
@@ -286,6 +387,5 @@ async def status(ctx):
     embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
 
     await ctx.send(embed=embed)
-
 
 bot.run(DISCORD_TOKEN)

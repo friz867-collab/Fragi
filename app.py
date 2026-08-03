@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+start_time = None
 
 # Wczytanie zmiennych środowiskowych z pliku .env
 load_dotenv()
@@ -158,8 +159,13 @@ async def check_frags():
         print(f"Błąd pętli: {e}")
 
 @bot.event
+@bot.event
 async def on_ready():
+    global start_time
+    if start_time is None:
+        start_time = datetime.now(timezone.utc)
     print(f"Zalogowano jako {bot.user.name}")
+    # ... tu zostaw swój dotychczasowy kod z on_ready (np. odpalanie pętli tasków) ...
     
     # Inicjalizacja obecnych fragów (żeby nie wysyłać powiadomień o starych)
     try:

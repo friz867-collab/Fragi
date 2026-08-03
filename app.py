@@ -222,5 +222,38 @@ async def player_info(ctx, *, player_name: str):
         embed.add_field(name="Ostatnie starcia", value="Brak wpisów", inline=False)
 
     await ctx.send(embed=embed)
+    @bot.command(name="status")
+async def status(ctx):
+    """Wyświetla status bota oraz czas jego ciągłego działania."""
+    if start_time is None:
+        await ctx.send("Bot dopiero się uruchamia...")
+        return
+
+    now = datetime.now(timezone.utc)
+    uptime = now - start_time
+
+    dni = uptime.days
+    godziny, remainder = divmod(uptime.seconds, 3600)
+    minuty, sekundy = divmod(remainder, 60)
+
+    embed = discord.Embed(
+        title="📊 Status Bota",
+        color=discord.Color.green(),
+        timestamp=now,
+    )
+    embed.add_field(name="Stan", value="🟢 Online (24/7)", inline=False)
+    embed.add_field(
+        name="Czas działania (Uptime)",
+        value=f"{dni}d {godziny}h {minuty}m {sekundy}s",
+        inline=False,
+    )
+    embed.add_field(
+        name="Opóźnienie (Ping)",
+        value=f"{round(bot.latency * 1000)} ms",
+        inline=False,
+    )
+    embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
+
+    await ctx.send(embed=embed)
 
 bot.run(DISCORD_TOKEN)

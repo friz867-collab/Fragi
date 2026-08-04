@@ -360,6 +360,7 @@ def fetch_guild_from_profile(player_name):
 
 def parse_frag_line(row_element):
     try:
+        # 1. Najpierw szukamy bezpośrednich linków do postaci
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -368,31 +369,51 @@ def parse_frag_line(row_element):
                 if (
                     text
                     and len(text) < 25
-                    and text.lower() not in ["back", "main", "view"]
+                    and text.lower()
+                    not in ["back", "main", "view", "characters", "guilds"]
                 ):
                     char_links.append(text)
 
+        # Jeśli znaleziono co najmniej dwa linki
         if len(char_links) >= 2:
             return char_links[1], char_links[0]
 
+        # 2. Jeśli brak linków, analizujemy czysty tekst linii
         row_text = " ".join(row_element.text.split())
-        if " killed by " in row_text.lower():
-            parts = re.split(
-                r"\s+killed\s+by\s+", row_text, flags=re.IGNORECASE
-            )
-            if len(parts) >= 2:
+
+        if " killed " in row_text.lower():
+            if " by " in row_text.lower():
+                parts = re.split(r"\s+by\s+", row_text, flags=re.IGNORECASE)
                 killer_raw = parts[1].split("->")[0].strip()
-                victim_words = parts[0].strip().split()
-                clean_victim = []
-                for w in reversed(victim_words):
-                    if any(c.isdigit() for c in w) or w.endswith(":"):
-                        break
-                    clean_victim.insert(0, w)
-                victim = " ".join(clean_victim).strip()
-                if killer_raw and victim:
-                    return killer_raw, victim
-    except Exception:
-        pass
+
+                killer = re.sub(
+                    r"\s+(at\s+)?level\s+\d+.*$",
+                    "",
+                    killer_raw,
+                    flags=re.IGNORECASE,
+                ).strip()
+
+                victim_part = parts[0]
+                if " killed " in victim_part.lower():
+                    victim_part = re.split(
+                        r"\s+killed\s+", victim_part, flags=re.IGNORECASE
+                    )[0]
+
+                victim_words = victim_part.strip().split()
+                clean_words = [
+                    w
+                    for w in victim_words
+                    if not w.isdigit()
+                    and not w.endswith(":")
+                    and w.lower() not in ["level", "at"]
+                ]
+                victim = " ".join(clean_words).strip()
+
+                if killer and victim:
+                    return killer, victim
+    except Exception as e:
+        print(f"Błąd parsowania linii: {e}")
+
     return None, None
 
 

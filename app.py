@@ -271,12 +271,10 @@ def get_top_players_24h_data():
 
 
 def get_player_data(player_name):
-    """Pobiera statystyki gracza, jego 5 ostatnich starć oraz wylicza Nemezis i Ulubioną Ofiarę."""
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     ph = "%s" if db_type == "pg" else "?"
 
-    # 1. Pobieranie podstawowych statystyk gracza
     cursor.execute(
         f"""
         SELECT player_name, guild_name, kills, deaths
@@ -287,7 +285,6 @@ def get_player_data(player_name):
     )
     player_row = cursor.fetchone()
 
-    # Jeśli gracza nie ma jeszcze w player_stats, spróbuj pobrać jego dokładną nazwę z historii
     exact_name = player_name
     if player_row:
         exact_name = player_row[0]
@@ -308,7 +305,6 @@ def get_player_data(player_name):
             conn.close()
             return None, [], "Brak danych", "Brak danych"
 
-    # 2. Ostatnie 5 wpisów w historii
     cursor.execute(
         f"""
         SELECT entry_text FROM frag_history
@@ -319,7 +315,6 @@ def get_player_data(player_name):
     )
     history_rows = [r[0] for r in cursor.fetchall()]
 
-    # 3. Zliczanie zabójców (Nemezis) oraz ofiar (Ulubiona Ofiara) z całej historii gracza
     cursor.execute(
         f"""
         SELECT entry_text FROM frag_history
@@ -333,14 +328,11 @@ def get_player_data(player_name):
     victims_count = {}
 
     for (entry,) in all_entries:
-        # Parsowanie oprawcy (od kogo ginął)
         if "Zginął od" in entry:
             match = re.search(r"Zginął od (.+?)(?:\s*\(|$)", entry)
             if match:
                 k_name = match.group(1).strip()
                 killers_count[k_name] = killers_count.get(k_name, 0) + 1
-
-        # Parsowanie ofiary (kogo zabijał)
         elif "Zabił" in entry:
             match = re.search(r"Zabił (.+?)(?:\s*\(|$)", entry)
             if match:
@@ -357,7 +349,6 @@ def get_player_data(player_name):
         top_victim = max(victims_count, key=victims_count.get)
         victim_info = f"**{top_victim}** ({victims_count[top_victim]} razy)"
 
-    # Jeśli nie było go w player_stats, utwórz domyślny tuple ze statystykami z wyliczeń
     if not player_row:
         total_kills = sum(victims_count.values())
         total_deaths = sum(killers_count.values())
@@ -366,6 +357,78 @@ def get_player_data(player_name):
     cursor.close()
     conn.close()
     return player_row, history_rows, nemesis_info, victim_info
+
+
+def get_guild_confrontations_data(guild_name):
+    """Pobiera statystyki konfrontacji danej gildii ze wszystkimi innymi gildiami."""
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+
+    # Pobieramy graczy należących do danej gildii (z dopasowaniem bez względu na wielkość liter)
+    cursor.execute(
+        f"""
+        SELECT player_name, guild_name FROM player_stats
+        WHERE LOWER(guild_name) = LOWER({ph})
+    """,
+        (guild_name,),
+    )
+    players = cursor.fetchall()
+
+    if not players:
+        cursor.close()
+        conn.close()
+        return None, {}, 0, 0
+
+    exact_guild_name = players[0][1]
+    player_names = [p[0] for p in players]
+
+    confrontations = {}
+    total_guild_kills = 0
+    total_guild_deaths = 0
+
+    # Pobieramy historię fragów dla wszystkich członków danej gildii
+    for p_name in player_names:
+        cursor.execute(
+            f"""
+            SELECT entry_text FROM frag_history
+            WHERE LOWER(player_name) = LOWER({ph})
+        """,
+            (p_name,),
+        )
+        entries = cursor.fetchall()
+
+        for (entry,) in entries:
+            # 1. Członek gildii kogoś zabił
+            if "Zabił" in entry:
+                match = re.search(r"Zabił .+? \((.+?)\)", entry)
+                if match:
+                    opp_guild = match.group(1).strip()
+                    if opp_guild.lower() != exact_guild_name.lower():
+                        if opp_guild not in confrontations:
+                            confrontations[opp_guild] = {"kills": 0, "deaths": 0}
+                        confrontations[opp_guild]["kills"] += 1
+                        total_guild_kills += 1
+
+            # 2. Członek gildii zginął od kogoś
+            elif "Zginął od" in entry:
+                match = re.search(r"Zginął od .+? \((.+?)\)", entry)
+                if match:
+                    opp_guild = match.group(1).strip()
+                    if opp_guild.lower() != exact_guild_name.lower():
+                        if opp_guild not in confrontations:
+                            confrontations[opp_guild] = {"kills": 0, "deaths": 0}
+                        confrontations[opp_guild]["deaths"] += 1
+                        total_guild_deaths += 1
+
+    cursor.close()
+    conn.close()
+    return (
+        exact_guild_name,
+        confrontations,
+        total_guild_kills,
+        total_guild_deaths,
+    )
 
 
 init_db()
@@ -806,14 +869,17 @@ async def pomoc(ctx):
     )
 
     embed.add_field(
-        name="⚔️ Kontrola Bitki",
-        value="`!koniecbitki` / `!endbitka` — Ręcznie kończy aktywne starcie i generuje raport.",
+        name="🛡️ Informacje o Gildiach i Graczach",
+        value=(
+            "`!gildia <nazwa>` — Wyświetla bilans konfrontacji danej gildii z przeciwnikami.\n"
+            "`!gracz <nick>` — Wyświetla K/D ratio, Nemezis, Ulubioną ofiarę oraz 5 ostatnich starć."
+        ),
         inline=False,
     )
 
     embed.add_field(
-        name="👤 Informacje o Graczu",
-        value="`!gracz <nick>` — Wyświetla K/D ratio, Nemezis, Ulubioną ofiarę oraz 5 ostatnich starć.",
+        name="⚔️ Kontrola Bitki",
+        value="`!koniecbitki` / `!endbitka` — Ręcznie kończy aktywne starcie i generuje raport.",
         inline=False,
     )
 
@@ -934,6 +1000,58 @@ async def player_info(ctx, *, player_name: str):
     else:
         embed.add_field(
             name="Ostatnie starcia", value="Brak wpisów", inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="gildia")
+async def guild_info(ctx, *, guild_name: str):
+    exact_guild, conf_data, total_k, total_d = await asyncio.to_thread(
+        get_guild_confrontations_data, guild_name
+    )
+
+    if not exact_guild:
+        await ctx.send(f"Nie znaleziono danych dla gildii **{guild_name}**.")
+        return
+
+    embed = discord.Embed(
+        title=f"🛡️ Statystyki Gildii: {exact_guild}", color=discord.Color.purple()
+    )
+    embed.add_field(
+        name="Bilans Ogólny",
+        value=f"Zabójstwa: `{total_k}` | Zgony: `{total_d}` | Bilans: `{total_k - total_d:+d}`",
+        inline=False,
+    )
+
+    if not conf_data:
+        embed.add_field(
+            name="Konfrontacje z innymi gildiami",
+            value="Brak zarejestrowanych konfrontacji.",
+            inline=False,
+        )
+    else:
+        # Sortowanie konfrontacji według łącznej liczby starć
+        sorted_conf = sorted(
+            conf_data.items(),
+            key=lambda item: item[1]["kills"] + item[1]["deaths"],
+            reverse=True,
+        )
+
+        lines = []
+        for opp_guild, stats in sorted_conf:
+            k = stats["kills"]
+            d = stats["deaths"]
+            diff = k - d
+            diff_str = f"+{diff}" if diff > 0 else str(diff)
+            lines.append(
+                f"• **{opp_guild}**: `{k}` zabójstw / `{d}` zgonów (Bilans: **{diff_str}**)"
+            )
+
+        embed.add_field(
+            name="⚔️ Konfrontacje z gildiami",
+            value="\n".join(lines[:15]),
+            inline=False,
         )
 
     await ctx.send(embed=embed)

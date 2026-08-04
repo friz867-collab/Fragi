@@ -226,6 +226,54 @@ def get_top_guilds_data():
     return rows
 
 
+def get_top_players_data():
+    """Pobiera TOP 10 graczy ogółem po liczbie zabójstw."""
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT player_name, guild_name, kills, deaths
+        FROM player_stats
+        ORDER BY kills DESC
+        LIMIT 10
+    """)
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+
+def get_top_players_24h_data():
+    """Pobiera TOP 5 graczy z ostatnich 24 godzin."""
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+
+    if db_type == "pg":
+        cursor.execute("""
+            SELECT player_name, COUNT(*) as kills_24h
+            FROM frag_history
+            WHERE entry_text LIKE '⚔️ Zabił%'
+              AND created_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY player_name
+            ORDER BY kills_24h DESC
+            LIMIT 5
+        """)
+    else:
+        cursor.execute("""
+            SELECT player_name, COUNT(*) as kills_24h
+            FROM frag_history
+            WHERE entry_text LIKE '⚔️ Zabił%'
+              AND created_at >= datetime('now', '-1 day')
+            GROUP BY player_name
+            ORDER BY kills_24h DESC
+            LIMIT 5
+        """)
+
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
+
+
 def get_player_data(player_name):
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
@@ -288,6 +336,7 @@ URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+bot.remove_command("help")  # Usuwamy domyślną komendę help
 
 session = requests.Session()
 session.headers.update({
@@ -671,6 +720,47 @@ async def on_ready():
         check_frags.start()
 
 
+# === KOMENDY BOTA ===
+
+
+@bot.command(name="pomoc", aliases=["help"])
+async def pomoc(ctx):
+    """Wyświetla listę wszystkich dostępnych komend bota."""
+    embed = discord.Embed(
+        title="📜 Lista Dostępnych Komend Bota",
+        description="Wszystkie komendy rozpoczynają się od przedrostka `!`",
+        color=discord.Color.blue(),
+    )
+
+    embed.add_field(
+        name="🏆 Rankingi i Statystyki",
+        value=(
+            "`!top` — Wyświetla TOP 10 najlepszych gildii według zabójstw.\n"
+            "`!topgracze` — Wyświetla TOP 10 graczy z największą liczbą zabić ogółem.\n"
+            "`!top24h` — Wyświetla TOP 5 graczy z największą liczbą zabójstw w ostatnich 24h."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="👤 Informacje o Graczu",
+        value="`!gracz <nick>` — Pokazuje szczegółowe statystyki oraz 5 ostatnich starć wybranego gracza.",
+        inline=False,
+    )
+
+    embed.add_field(
+        name="⚙️ System i Informacje",
+        value=(
+            "`!status` — Sprawdza stan bota, czas działania (uptime) oraz opóźnienie (ping).\n"
+            "`!pomoc` / `!help` — Wyświetla tę listę komend."
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="top")
 async def top_guilds(ctx):
     top_guilds_list = await asyncio.to_thread(get_top_guilds_data)
@@ -683,6 +773,66 @@ async def top_guilds(ctx):
         embed.add_field(
             name=f"🛡️ {guild}",
             value=f"Kills: `{kills}` | Deaths: `{deaths}`",
+            inline=False,
+        )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="topgracze")
+async def top_players(ctx):
+    """Wyświetla TOP 10 graczy pod względem liczby frags."""
+    top_list = await asyncio.to_thread(get_top_players_data)
+    if not top_list:
+        await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
+        return
+
+    embed = discord.Embed(
+        title="🏆 Ranking TOP 10 Graczy", color=discord.Color.gold()
+    )
+    for idx, (player, guild, kills, deaths) in enumerate(top_list, 1):
+        medal = (
+            "🥇"
+            if idx == 1
+            else "🥈"
+            if idx == 2
+            else "🥉"
+            if idx == 3
+            else f"#{idx}"
+        )
+        embed.add_field(
+            name=f"{medal} {player} ({guild})",
+            value=f"Kills: `{kills}` | Deaths: `{deaths}`",
+            inline=False,
+        )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="top24h")
+async def top_players_24h(ctx):
+    """Wyświetla TOP 5 graczy z ostatnich 24 godzin."""
+    top_list = await asyncio.to_thread(get_top_players_24h_data)
+    if not top_list:
+        await ctx.send("Brak fragów w ostatnich 24 godzinach.")
+        return
+
+    embed = discord.Embed(
+        title="🔥 TOP Gracze Ostatnich 24h", color=discord.Color.orange()
+    )
+    for idx, (player, kills_24h) in enumerate(top_list, 1):
+        medal = (
+            "🥇"
+            if idx == 1
+            else "🥈"
+            if idx == 2
+            else "🥉"
+            if idx == 3
+            else f"#{idx}"
+        )
+        embed.add_field(
+            name=f"{medal} {player}",
+            value=f"Fragi w 24h: `{kills_24h}`",
             inline=False,
         )
 

@@ -1,5 +1,6 @@
 import os
 import re
+import sqlite3
 import urllib.parse
 from datetime import datetime, timezone
 from threading import Thread
@@ -19,115 +20,108 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===
 
-# === BAZA DANYCH POSTGRESQL (NEON.TECH) ===
+
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""
+    if DATABASE_URL:
+        # Render podaje URL zaczynający się od postgres://, psycopg2 wymaga postgresql://
+        url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(url), "pg"
+    else:
+        return sqlite3.connect("bot_data.db"), "sqlite"
 
 
 def init_db():
-    if not DATABASE_URL:
-        print(
-            "⚠️ BŁĄD: Brak zmiennej DATABASE_URL. Sprawdź środowisko na Render."
-        )
-        return
-
-    conn = get_db_connection()
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS processed_frags (
-            frag_hash TEXT PRIMARY KEY
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS player_stats (
-            player_name TEXT PRIMARY KEY,
-            guild_name TEXT,
-            kills INTEGER DEFAULT 0,
-            deaths INTEGER DEFAULT 0
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS frag_history (
-            id SERIAL PRIMARY KEY,
-            player_name TEXT,
-            entry_text TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+
+    if db_type == "pg":
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processed_frags (
+                frag_hash TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS player_stats (
+                player_name TEXT PRIMARY KEY,
+                guild_name TEXT,
+                kills INTEGER DEFAULT 0,
+                deaths INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS frag_history (
+                id SERIAL PRIMARY KEY,
+                player_name TEXT,
+                entry_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processed_frags (
+                frag_hash TEXT PRIMARY KEY
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS player_stats (
+                player_name TEXT PRIMARY KEY,
+                guild_name TEXT,
+                kills INTEGER DEFAULT 0,
+                deaths INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS frag_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name TEXT,
+                entry_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
     conn.commit()
     cursor.close()
     conn.close()
 
 
 def is_frag_processed(frag_text):
-    if not DATABASE_URL:
-        return False
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM processed_frags WHERE frag_hash = %s", (frag_text,)
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        return row is not None
-    except Exception as e:
-        print(f"Błąd sprawdzania fraga: {e}")
-        return False
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+    cursor.execute(
+        f"SELECT 1 FROM processed_frags WHERE frag_hash = {ph}", (frag_text,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row is not None
 
 
 def mark_frag_processed(frag_text):
-    if not DATABASE_URL:
-        return
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+
+    if db_type == "pg":
         cursor.execute(
-            """
-            INSERT INTO processed_frags (frag_hash) 
-            VALUES (%s) 
-            ON CONFLICT (frag_hash) DO NOTHING
-        """,
+            "INSERT INTO processed_frags (frag_hash) VALUES (%s) ON CONFLICT DO NOTHING",
             (frag_text,),
         )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"Błąd zapisywania przelanego fraga: {e}")
-
-
-def mark_frags_processed_batch(frag_texts):
-    """Szybki zapis zbiorczy wielu fragów w jednym zapytaniu DB."""
-    if not DATABASE_URL or not frag_texts:
-        return
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        args_str = ",".join(
-            cursor.mogrify("(%s)", (text,)).decode("utf-8")
-            for text in frag_texts
+    else:
+        cursor.execute(
+            "INSERT OR IGNORE INTO processed_frags (frag_hash) VALUES (?)",
+            (frag_text,),
         )
-        cursor.execute(f"""
-            INSERT INTO processed_frags (frag_hash) 
-            VALUES {args_str} 
-            ON CONFLICT (frag_hash) DO NOTHING
-        """)
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"Błąd zbiorczego zapisywania fragów: {e}")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 
 def record_kill_and_death(killer, killer_guild, victim, victim_guild):
-    if not DATABASE_URL:
-        return
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+
+    if db_type == "pg":
         cursor.execute(
             """
             INSERT INTO player_stats (player_name, guild_name, kills, deaths)
@@ -162,69 +156,95 @@ def record_kill_and_death(killer, killer_guild, victim, victim_guild):
         """,
             (victim, f"💀 Zginął od {killer} ({killer_guild})"),
         )
-        conn.commit()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        print(f"Błąd rejestrowania zabójstwa: {e}")
+    else:
+        cursor.execute(
+            """
+            INSERT INTO player_stats (player_name, guild_name, kills, deaths)
+            VALUES (?, ?, 1, 0)
+            ON CONFLICT(player_name) DO UPDATE SET
+                guild_name = excluded.guild_name,
+                kills = kills + 1
+        """,
+            (killer, killer_guild),
+        )
+        cursor.execute(
+            """
+            INSERT INTO player_stats (player_name, guild_name, kills, deaths)
+            VALUES (?, ?, 0, 1)
+            ON CONFLICT(player_name) DO UPDATE SET
+                guild_name = excluded.guild_name,
+                deaths = deaths + 1
+        """,
+            (victim, victim_guild),
+        )
+        cursor.execute(
+            """
+            INSERT INTO frag_history (player_name, entry_text)
+            VALUES (?, ?)
+        """,
+            (killer, f"⚔️ Zabił {victim} ({victim_guild})"),
+        )
+        cursor.execute(
+            """
+            INSERT INTO frag_history (player_name, entry_text)
+            VALUES (?, ?)
+        """,
+            (victim, f"💀 Zginął od {killer} ({killer_guild})"),
+        )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 
 def get_top_guilds_data():
-    if not DATABASE_URL:
-        return []
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT guild_name, SUM(kills) as total_kills, SUM(deaths) as total_deaths
-            FROM player_stats
-            WHERE guild_name != 'Bez Gildii'
-            GROUP BY guild_name
-            ORDER BY total_kills DESC
-            LIMIT 10
-        """)
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"Błąd pobierania rankingu gildii: {e}")
-        return []
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT guild_name, SUM(kills) as total_kills, SUM(deaths) as total_deaths
+        FROM player_stats
+        WHERE guild_name != 'Bez Gildii'
+        GROUP BY guild_name
+        ORDER BY total_kills DESC
+        LIMIT 10
+    """)
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
 
 
 def get_player_data(player_name):
-    if not DATABASE_URL:
-        return None, []
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+
+    cursor.execute(
+        f"""
+        SELECT player_name, guild_name, kills, deaths
+        FROM player_stats
+        WHERE LOWER(player_name) = LOWER({ph})
+    """,
+        (player_name,),
+    )
+    player_row = cursor.fetchone()
+    history_rows = []
+
+    if player_row:
+        exact_name = player_row[0]
         cursor.execute(
-            """
-            SELECT player_name, guild_name, kills, deaths
-            FROM player_stats
-            WHERE LOWER(player_name) = LOWER(%s)
+            f"""
+            SELECT entry_text FROM frag_history
+            WHERE player_name = {ph}
+            ORDER BY id DESC LIMIT 5
         """,
-            (player_name,),
+            (exact_name,),
         )
-        player_row = cursor.fetchone()
-        history_rows = []
-        if player_row:
-            exact_name = player_row[0]
-            cursor.execute(
-                """
-                SELECT entry_text FROM frag_history
-                WHERE player_name = %s
-                ORDER BY id DESC LIMIT 5
-            """,
-                (exact_name,),
-            )
-            history_rows = [r[0] for r in cursor.fetchall()]
-        cursor.close()
-        conn.close()
-        return player_row, history_rows
-    except Exception as e:
-        print(f"Błąd pobierania danych gracza: {e}")
-        return None, []
+        history_rows = [r[0] for r in cursor.fetchall()]
+
+    cursor.close()
+    conn.close()
+    return player_row, history_rows
 
 
 init_db()
@@ -281,7 +301,9 @@ def fetch_guild_from_profile(player_name):
         return player_guild_cache[player_name]
 
     safe_name = urllib.parse.quote(player_name)
-    url = f"http://dblots.org.pl/characters.php?lang=en&s=classic&char={safe_name}"
+    url = (
+        f"http://dblots.org.pl/characters.php?lang=en&s=classic&char={safe_name}"
+    )
 
     try:
         res = session.get(url, timeout=5)
@@ -369,10 +391,7 @@ async def send_bitka_start(channel):
 
     embed = discord.Embed(
         title="⚔️ ROZPOCZĘŁA SIĘ BITKA!",
-        description=(
-            "Wpadła seria zabójstw! Bot śledzi akcję – pełne podsumowanie pojaw"
-            "i się po zakończeniu starcia."
-        ),
+        description="Wpadła seria zabójstw! Bot śledzi akcję – pełne podsumowanie pojawi się po zakończeniu starcia.",
         color=discord.Color.red(),
         timestamp=datetime.now(timezone.utc),
     )
@@ -399,43 +418,40 @@ async def send_bitka_summary(channel):
 
     total_frags = len(bitka_buffer)
 
-    guild_stats = {}  # {guild: [kills, deaths]}
-    player_stats = {}  # {player: [guild, kills, deaths]}
+    guild_stats = {}  # {guild: [frags, kills, deaths]}
+    player_stats = {}  # {player: [guild, frags, kills, deaths]}
     guild_members = {}  # {guild: set(players)}
 
     for killer, killer_guild, victim, victim_guild in bitka_buffer:
-        # Inicjalizacja struktur danych
         for g in [killer_guild, victim_guild]:
             if g not in guild_stats:
-                guild_stats[g] = [0, 0]
+                guild_stats[g] = [0, 0, 0]
             if g not in guild_members:
                 guild_members[g] = set()
 
         if killer not in player_stats:
-            player_stats[killer] = [killer_guild, 0, 0]
+            player_stats[killer] = [killer_guild, 0, 0, 0]
         if victim not in player_stats:
-            player_stats[victim] = [victim_guild, 0, 0]
+            player_stats[victim] = [victim_guild, 0, 0, 0]
 
         guild_members[killer_guild].add(killer)
         guild_members[victim_guild].add(victim)
 
-        # Zabójca (Kills +1)
         guild_stats[killer_guild][0] += 1
+        guild_stats[killer_guild][1] += 1
         player_stats[killer][1] += 1
+        player_stats[killer][2] += 1
 
-        # Ofiara (Deaths +1)
-        guild_stats[victim_guild][1] += 1
-        player_stats[victim][2] += 1
+        guild_stats[victim_guild][2] += 1
+        player_stats[victim][3] += 1
 
-    # MVP - gracz z największą liczbą zabić
     mvp_player = "Brak"
     max_kills = -1
     for p_name, data in player_stats.items():
-        if data[1] > max_kills:
-            max_kills = data[1]
+        if data[2] > max_kills:
+            max_kills = data[2]
             mvp_player = p_name
 
-    # Generowanie dat
     start_str = (
         bitka_start_time.strftime("%Y.%m.%d %H:%M:%S")
         if bitka_start_time
@@ -443,34 +459,33 @@ async def send_bitka_summary(channel):
     )
     end_str = datetime.now().strftime("%H:%M:%S")
 
-    # Formatowanie raportu
     report = []
     report.append("LAST BATTLE REPORT")
     report.append("━" * 60)
     report.append(
-        f"PODSUMOWANIE OSTATNIEJ BITKI {start_str} → {end_str} Fragi:"
-        f" {total_frags} MVP: {mvp_player}"
+        f"PODSUMOWANIE OSTATNIEJ BITKI {start_str} → {end_str} Fragi: {total_frags} MVP: {mvp_player}"
     )
     report.append("")
     report.append("━" * 60)
-    report.append("GILDIE (Zabójstwa | Zgony):")
+    report.append("GILDIE:")
 
     sorted_guilds = sorted(
         guild_stats.items(), key=lambda x: x[1][0], reverse=True
     )
     for g_name, stat in sorted_guilds:
-        report.append(f"• {g_name:<30} |  {stat[0]:>2}  {stat[1]:>2}")
+        report.append(f"• {g_name:<20} |  {stat[0]}  {stat[1]}  {stat[2]}")
 
     report.append("")
     report.append("━" * 60)
-    report.append("GRACZE (Zabójstwa | Zgony):")
+    report.append("GRACZE:")
 
     sorted_players = sorted(
-        player_stats.items(), key=lambda x: x[1][1], reverse=True
+        player_stats.items(), key=lambda x: x[1][2], reverse=True
     )
     for p_name, data in sorted_players:
-        player_str = f"{p_name} ({data[0]})"
-        report.append(f"• {player_str:<45} |  {data[1]:>2}  {data[2]:>2}")
+        report.append(
+            f"{p_name} ({data[0]}) |  {data[1]}  {data[2]}  {data[3]}"
+        )
 
     report.append("━" * 60)
     report.append("")
@@ -479,7 +494,7 @@ async def send_bitka_summary(channel):
     report.append("SKŁADY GILDII — OSTATNIA BITWA:")
     report.append("")
 
-    for g_name, _ in sorted_guilds:
+    for g_name, members in sorted_guilds:
         m_list = guild_members[g_name]
         names_str = ", ".join(sorted(m_list))
         report.append(f"• {g_name} ({len(m_list)}): {names_str}")
@@ -489,19 +504,15 @@ async def send_bitka_summary(channel):
 
     full_text = "\n".join(report)
 
-    # Dzielenie długiej wiadomości na części (limit 2000 znaków w Discordzie)
     if len(full_text) > 1900:
         chunks = [
             full_text[i : i + 1800] for i in range(0, len(full_text), 1800)
         ]
         for chunk in chunks:
-            formatted_chunk = f"```text\n{chunk}\n```"
-            await channel.send(formatted_chunk)
+            await channel.send(f"```text\n{chunk}\n```")
     else:
-        formatted_full = f"```text\n{full_text}\n```"
-        await channel.send(formatted_full)
+        await channel.send(f"```text\n{full_text}\n```")
 
-    # Resetowanie zmiennych
     is_bitka_active = False
     bitka_buffer.clear()
     pre_bitka_buffer.clear()
@@ -547,7 +558,6 @@ async def check_frags():
                     else:
                         pre_bitka_buffer.append(frag_data)
 
-                        # Gdy wpadnie przynajmniej 5 fragów w oknie czasowym
                         if len(pre_bitka_buffer) >= 5:
                             is_bitka_active = True
                             bitka_start_time = datetime.now()
@@ -557,13 +567,11 @@ async def check_frags():
 
                 mark_frag_processed(row_text)
 
-        # 1. Kasowanie wstępnego bufora po 3 minutach bez 5 fragów
         if not is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() > 180:
                 pre_bitka_buffer.clear()
                 last_frag_time = None
 
-        # 2. Wykrywanie końca bitki po 10 minutach (600 sek) braku zabójstw
         if is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() >= 600:
                 await send_bitka_summary(channel)
@@ -582,22 +590,14 @@ async def on_ready():
     try:
         res = session.get(URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
+        for row in soup.find_all("tr"):
+            row_text = row.get_text(strip=True)
+            if row_text:
+                mark_frag_processed(row_text)
+    except Exception:
+        pass
 
-        # Zbierz wszystkie teksty wierszy do jednej listy
-        initial_frags = [
-            row.get_text(strip=True)
-            for row in soup.find_all("tr")
-            if row.get_text(strip=True)
-        ]
-
-        # Szybki zapis zbiorczy (1 zapytanie do bazy zamiast kilkudziesięciu)
-        mark_frags_processed_batch(initial_frags)
-    except Exception as e:
-        print(f"Błąd podczas inicjalizacji on_ready: {e}")
-
-    # Uruchomienie pętli sprawdzającej tylko jeśli jeszcze nie działa
-    if not check_frags.is_running():
-        check_frags.start()
+    check_frags.start()
 
 
 @bot.command(name="top")
@@ -607,9 +607,7 @@ async def top_guilds(ctx):
         await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
         return
 
-    embed = discord.Embed(
-        title="🏆 Ranking Gildii", color=discord.Color.gold()
-    )
+    embed = discord.Embed(title="🏆 Ranking Gildii", color=discord.Color.gold())
     for guild, kills, deaths in top_guilds_list:
         embed.add_field(
             name=f"🛡️ {guild}",

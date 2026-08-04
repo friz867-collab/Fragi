@@ -472,6 +472,7 @@ async def send_bitka_summary(channel):
             full_text[i : i + 1800] for i in range(0, len(full_text), 1800)
         ]
         for chunk in chunks:
-            await channel.send(f"```text\n{chunk}\n```")
+            formatted_chunk = f"```text\n{chunk}\n```"
+            await channel.send(formatted_chunk)
     else:
-        await channel.send(f"```text\n{full_text}\n
+        formatted_full = f"```text\n{full_text}\n

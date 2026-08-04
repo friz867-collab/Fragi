@@ -99,6 +99,29 @@ def mark_frag_processed(frag_text):
         print(f"Błąd zapisywania przelanego fraga: {e}")
 
 
+def mark_frags_processed_batch(frag_texts):
+    """Szybki zapis zbiorczy wielu fragów w jednym zapytaniu DB."""
+    if not DATABASE_URL or not frag_texts:
+        return
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        args_str = ",".join(
+            cursor.mogrify("(%s)", (text,)).decode("utf-8")
+            for text in frag_texts
+        )
+        cursor.execute(f"""
+            INSERT INTO processed_frags (frag_hash) 
+            VALUES {args_str} 
+            ON CONFLICT (frag_hash) DO NOTHING
+        """)
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"Błąd zbiorczego zapisywania fragów: {e}")
+
+
 def record_kill_and_death(killer, killer_guild, victim, victim_guild):
     if not DATABASE_URL:
         return
@@ -559,14 +582,22 @@ async def on_ready():
     try:
         res = session.get(URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
-        for row in soup.find_all("tr"):
-            row_text = row.get_text(strip=True)
-            if row_text:
-                mark_frag_processed(row_text)
-    except Exception:
-        pass
 
-    check_frags.start()
+        # Zbierz wszystkie teksty wierszy do jednej listy
+        initial_frags = [
+            row.get_text(strip=True)
+            for row in soup.find_all("tr")
+            if row.get_text(strip=True)
+        ]
+
+        # Szybki zapis zbiorczy (1 zapytanie do bazy zamiast kilkudziesięciu)
+        mark_frags_processed_batch(initial_frags)
+    except Exception as e:
+        print(f"Błąd podczas inicjalizacji on_ready: {e}")
+
+    # Uruchomienie pętli sprawdzającej tylko jeśli jeszcze nie działa
+    if not check_frags.is_running():
+        check_frags.start()
 
 
 @bot.command(name="top")

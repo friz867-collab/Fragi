@@ -879,7 +879,7 @@ async def pomoc(ctx):
 
     embed.add_field(
         name="⚔️ Kontrola Bitki",
-        value="`!koniecbitki` / `!endbitka` — Ręcznie kończy aktywne starcie i generuje raport.",
+        value="`!koniecbitki` / `!endfight` — Ręcznie kończy aktywne starcie i generuje raport.",
         inline=False,
     )
 

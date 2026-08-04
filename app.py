@@ -276,6 +276,7 @@ def get_player_data(player_name):
     cursor = conn.cursor()
     ph = "%s" if db_type == "pg" else "?"
 
+    # 1. Pobieranie podstawowych statystyk gracza
     cursor.execute(
         f"""
         SELECT player_name, guild_name, kills, deaths
@@ -285,65 +286,82 @@ def get_player_data(player_name):
         (player_name,),
     )
     player_row = cursor.fetchone()
-    history_rows = []
-    nemesis_info = "Brak (nie zginął od nikogo)"
-    victim_info = "Brak (nikogo nie zabił)"
 
+    # Jeśli gracza nie ma jeszcze w player_stats, spróbuj pobrać jego dokładną nazwę z historii
+    exact_name = player_name
     if player_row:
         exact_name = player_row[0]
-
-        # 1. Ostatnie 5 wpisów w historii
+    else:
         cursor.execute(
             f"""
-            SELECT entry_text FROM frag_history
-            WHERE player_name = {ph}
-            ORDER BY id DESC LIMIT 5
+            SELECT player_name FROM frag_history
+            WHERE LOWER(player_name) = LOWER({ph})
+            LIMIT 1
         """,
-            (exact_name,),
+            (player_name,),
         )
-        history_rows = [r[0] for r in cursor.fetchall()]
+        found_hist = cursor.fetchone()
+        if found_hist:
+            exact_name = found_hist[0]
+        else:
+            cursor.close()
+            conn.close()
+            return None, [], "Brak danych", "Brak danych"
 
-        # 2. Wyliczanie Nemezis (od kogo najczęściej ginął)
-        cursor.execute(
-            f"""
-            SELECT entry_text FROM frag_history
-            WHERE player_name = {ph} AND entry_text LIKE '💀 Zginął od%'
-        """,
-            (exact_name,),
-        )
-        death_entries = cursor.fetchall()
-        killers_count = {}
-        for (entry,) in death_entries:
-            # Format wpisu: "💀 Zginął od <Nick> (<Gildia>)"
-            match = re.search(r"💀 Zginął od (.+?) \(", entry)
+    # 2. Ostatnie 5 wpisów w historii
+    cursor.execute(
+        f"""
+        SELECT entry_text FROM frag_history
+        WHERE LOWER(player_name) = LOWER({ph})
+        ORDER BY id DESC LIMIT 5
+    """,
+        (exact_name,),
+    )
+    history_rows = [r[0] for r in cursor.fetchall()]
+
+    # 3. Zliczanie zabójców (Nemezis) oraz ofiar (Ulubiona Ofiara) z całej historii gracza
+    cursor.execute(
+        f"""
+        SELECT entry_text FROM frag_history
+        WHERE LOWER(player_name) = LOWER({ph})
+    """,
+        (exact_name,),
+    )
+    all_entries = cursor.fetchall()
+
+    killers_count = {}
+    victims_count = {}
+
+    for (entry,) in all_entries:
+        # Parsowanie oprawcy (od kogo ginął)
+        if "Zginął od" in entry:
+            match = re.search(r"Zginął od (.+?)(?:\s*\(|$)", entry)
             if match:
                 k_name = match.group(1).strip()
                 killers_count[k_name] = killers_count.get(k_name, 0) + 1
 
-        if killers_count:
-            top_killer = max(killers_count, key=killers_count.get)
-            nemesis_info = f"**{top_killer}** ({killers_count[top_killer]} razy)"
-
-        # 3. Wyliczanie Ulubionej Ofiary (kogo najczęściej zabijał)
-        cursor.execute(
-            f"""
-            SELECT entry_text FROM frag_history
-            WHERE player_name = {ph} AND entry_text LIKE '⚔️ Zabił%'
-        """,
-            (exact_name,),
-        )
-        kill_entries = cursor.fetchall()
-        victims_count = {}
-        for (entry,) in kill_entries:
-            # Format wpisu: "⚔️ Zabił <Nick> (<Gildia>)"
-            match = re.search(r"⚔️ Zabił (.+?) \(", entry)
+        # Parsowanie ofiary (kogo zabijał)
+        elif "Zabił" in entry:
+            match = re.search(r"Zabił (.+?)(?:\s*\(|$)", entry)
             if match:
                 v_name = match.group(1).strip()
                 victims_count[v_name] = victims_count.get(v_name, 0) + 1
 
-        if victims_count:
-            top_victim = max(victims_count, key=victims_count.get)
-            victim_info = f"**{top_victim}** ({victims_count[top_victim]} razy)"
+    nemesis_info = "Brak (nie zginął od nikogo)"
+    if killers_count:
+        top_killer = max(killers_count, key=killers_count.get)
+        nemesis_info = f"**{top_killer}** ({killers_count[top_killer]} razy)"
+
+    victim_info = "Brak (nikogo nie zabił)"
+    if victims_count:
+        top_victim = max(victims_count, key=victims_count.get)
+        victim_info = f"**{top_victim}** ({victims_count[top_victim]} razy)"
+
+    # Jeśli nie było go w player_stats, utwórz domyślny tuple ze statystykami z wyliczeń
+    if not player_row:
+        total_kills = sum(victims_count.values())
+        total_deaths = sum(killers_count.values())
+        player_row = (exact_name, "Bez Gildii", total_kills, total_deaths)
 
     cursor.close()
     conn.close()

@@ -409,7 +409,6 @@ def fetch_guild_from_profile(player_name):
 
 def parse_frag_line(row_element):
     try:
-        # 1. Sprawdzamy, czy w wierszu są bezpośrednie linki do postaci
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -426,10 +425,8 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             return char_links[1], char_links[0]
 
-        # 2. Jeśli brak linków, analizujemy tekst i DODAJEMY ODSTĘPY/SPACJE
         row_text = " ".join(row_element.text.split())
 
-        # Wstawiamy spacje wokół zlepionych słów kluczowych (np. Swaggerkilled -> Swagger killed)
         row_text = re.sub(
             r"([a-zA-Z0-9])killed", r"\1 killed", row_text, flags=re.IGNORECASE
         )
@@ -443,7 +440,6 @@ def parse_frag_line(row_element):
             r"by([a-zA-Z0-9])", r"by \1", row_text, flags=re.IGNORECASE
         )
 
-        # Usuwamy cyfry z samego początku linii (np. "1 2026.08...")
         row_text = re.sub(r"^\d+\s+", "", row_text)
 
         if " killed " in row_text.lower() and " by " in row_text.lower():
@@ -458,7 +454,6 @@ def parse_frag_line(row_element):
                 r"\s+killed\s+", parts[0], flags=re.IGNORECASE
             )[0]
 
-            # Czyszczenie daty z nicku ofiary
             victim_cleaned = re.sub(
                 r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*",
                 "",
@@ -629,7 +624,6 @@ async def check_frags():
         return
 
     try:
-        # POBIERANIE STRONY W ODRĘBNYM WĄTKU (BEZ BLOKOWANIA ASYNCIO)
         res = await asyncio.to_thread(session.get, URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
         rows = list(soup.find_all("tr"))
@@ -642,7 +636,6 @@ async def check_frags():
             if not row_text or len(row_text) < 10:
                 continue
 
-            # SPRAWDZANIE W BAZIE W ODRĘBNYM WĄTKU
             processed = await asyncio.to_thread(is_frag_processed, row_text)
             if not processed:
                 killer, victim = parse_frag_line(row)
@@ -723,6 +716,19 @@ async def on_ready():
 # === KOMENDY BOTA ===
 
 
+@bot.command(name="koniecbitki", aliases=["endbitka"])
+async def end_bitka(ctx):
+    """Ręcznie kończy trwającą bitkę i generuje jej podsumowanie."""
+    global is_bitka_active
+
+    if not is_bitka_active:
+        await ctx.send("W tym momencie nie trwa żadna bitka.")
+        return
+
+    await ctx.send("🛑 Ręczne zamykanie bitki... Generuję podsumowanie.")
+    await send_bitka_summary(ctx.channel)
+
+
 @bot.command(name="pomoc", aliases=["help"])
 async def pomoc(ctx):
     """Wyświetla listę wszystkich dostępnych komend bota."""
@@ -739,6 +745,12 @@ async def pomoc(ctx):
             "`!topgracze` — Wyświetla TOP 10 graczy z największą liczbą zabić ogółem.\n"
             "`!top24h` — Wyświetla TOP 5 graczy z największą liczbą zabójstw w ostatnich 24h."
         ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="⚔️ Kontrola Bitki",
+        value="`!koniecbitki` / `!endbitka` — Ręcznie kończy aktywne starcie i generuje raport.",
         inline=False,
     )
 

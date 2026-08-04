@@ -360,7 +360,7 @@ def fetch_guild_from_profile(player_name):
 
 def parse_frag_line(row_element):
     try:
-        # 1. Najpierw szukamy bezpośrednich linków do postaci
+        # 1. Sprawdzamy, czy w wierszu są bezpośrednie linki do postaci
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -374,43 +374,61 @@ def parse_frag_line(row_element):
                 ):
                     char_links.append(text)
 
-        # Jeśli znaleziono co najmniej dwa linki
         if len(char_links) >= 2:
             return char_links[1], char_links[0]
 
-        # 2. Jeśli brak linków, analizujemy czysty tekst linii
+        # 2. Jeśli brak linków, analizujemy tekst i DODAJEMY ODSTĘPY/SPACJE
         row_text = " ".join(row_element.text.split())
 
-        if " killed " in row_text.lower():
-            if " by " in row_text.lower():
-                parts = re.split(r"\s+by\s+", row_text, flags=re.IGNORECASE)
-                killer_raw = parts[1].split("->")[0].strip()
+        # Wstawiamy spacje wokół zlepionych słów kluczowych (np. Swaggerkilled -> Swagger killed)
+        row_text = re.sub(
+            r"([a-zA-Z0-9])killed", r"\1 killed", row_text, flags=re.IGNORECASE
+        )
+        row_text = re.sub(
+            r"killed([a-zA-Z0-9])", r"killed \1", row_text, flags=re.IGNORECASE
+        )
+        row_text = re.sub(
+            r"([a-zA-Z0-9])by", r"\1 by", row_text, flags=re.IGNORECASE
+        )
+        row_text = re.sub(
+            r"by([a-zA-Z0-9])", r"by \1", row_text, flags=re.IGNORECASE
+        )
 
-                killer = re.sub(
-                    r"\s+(at\s+)?level\s+\d+.*$",
-                    "",
-                    killer_raw,
-                    flags=re.IGNORECASE,
-                ).strip()
+        # Usuwamy cyfry z samego początku linii (np. "1 2026.08...")
+        row_text = re.sub(r"^\d+\s+", "", row_text)
 
-                victim_part = parts[0]
-                if " killed " in victim_part.lower():
-                    victim_part = re.split(
-                        r"\s+killed\s+", victim_part, flags=re.IGNORECASE
-                    )[0]
+        if " killed " in row_text.lower() and " by " in row_text.lower():
+            parts = re.split(r"\s+by\s+", row_text, flags=re.IGNORECASE)
 
-                victim_words = victim_part.strip().split()
-                clean_words = [
-                    w
-                    for w in victim_words
-                    if not w.isdigit()
-                    and not w.endswith(":")
-                    and w.lower() not in ["level", "at"]
-                ]
-                victim = " ".join(clean_words).strip()
+            killer_raw = parts[1].split("->")[0].strip()
+            killer = re.sub(
+                r"\s+(at\s+)?level\s+\d+.*$", "", killer_raw, flags=re.IGNORECASE
+            ).strip()
 
-                if killer and victim:
-                    return killer, victim
+            victim_part = re.split(
+                r"\s+killed\s+", parts[0], flags=re.IGNORECASE
+            )[0]
+
+            # Czyszczenie daty z nicku ofiary
+            victim_cleaned = re.sub(
+                r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*",
+                "",
+                victim_part,
+            ).strip()
+
+            victim_words = victim_cleaned.split()
+            clean_words = [
+                w
+                for w in victim_words
+                if not w.isdigit()
+                and not w.endswith(":")
+                and w.lower() not in ["level", "at"]
+            ]
+            victim = " ".join(clean_words).strip()
+
+            if killer and victim:
+                return killer, victim
+
     except Exception as e:
         print(f"Błąd parsowania linii: {e}")
 

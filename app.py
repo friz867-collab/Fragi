@@ -27,7 +27,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""
     if DATABASE_URL:
-        # Render podaje URL zaczynający się od postgres://, psycopg2 wymaga postgresql://
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
         return psycopg2.connect(url), "pg"
     else:
@@ -98,7 +97,6 @@ def is_frag_processed(frag_text):
 
 
 def mark_frags_processed_batch(frag_texts):
-    """Szybki zapis zbiorczy wielu fragów w 1 zapytaniu do bazy."""
     if not frag_texts:
         return
 
@@ -227,7 +225,6 @@ def get_top_guilds_data():
 
 
 def get_top_players_data():
-    """Pobiera TOP 10 graczy ogółem po liczbie zabójstw."""
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -243,7 +240,6 @@ def get_top_players_data():
 
 
 def get_top_players_24h_data():
-    """Pobiera TOP 5 graczy z ostatnich 24 godzin."""
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
@@ -275,6 +271,7 @@ def get_top_players_24h_data():
 
 
 def get_player_data(player_name):
+    """Pobiera statystyki gracza, jego 5 ostatnich starć oraz wylicza Nemezis i Ulubioną Ofiarę."""
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     ph = "%s" if db_type == "pg" else "?"
@@ -289,9 +286,13 @@ def get_player_data(player_name):
     )
     player_row = cursor.fetchone()
     history_rows = []
+    nemesis_info = "Brak (nie zginął od nikogo)"
+    victim_info = "Brak (nikogo nie zabił)"
 
     if player_row:
         exact_name = player_row[0]
+
+        # 1. Ostatnie 5 wpisów w historii
         cursor.execute(
             f"""
             SELECT entry_text FROM frag_history
@@ -302,9 +303,51 @@ def get_player_data(player_name):
         )
         history_rows = [r[0] for r in cursor.fetchall()]
 
+        # 2. Wyliczanie Nemezis (od kogo najczęściej ginął)
+        cursor.execute(
+            f"""
+            SELECT entry_text FROM frag_history
+            WHERE player_name = {ph} AND entry_text LIKE '💀 Zginął od%'
+        """,
+            (exact_name,),
+        )
+        death_entries = cursor.fetchall()
+        killers_count = {}
+        for (entry,) in death_entries:
+            # Format wpisu: "💀 Zginął od <Nick> (<Gildia>)"
+            match = re.search(r"💀 Zginął od (.+?) \(", entry)
+            if match:
+                k_name = match.group(1).strip()
+                killers_count[k_name] = killers_count.get(k_name, 0) + 1
+
+        if killers_count:
+            top_killer = max(killers_count, key=killers_count.get)
+            nemesis_info = f"**{top_killer}** ({killers_count[top_killer]} razy)"
+
+        # 3. Wyliczanie Ulubionej Ofiary (kogo najczęściej zabijał)
+        cursor.execute(
+            f"""
+            SELECT entry_text FROM frag_history
+            WHERE player_name = {ph} AND entry_text LIKE '⚔️ Zabił%'
+        """,
+            (exact_name,),
+        )
+        kill_entries = cursor.fetchall()
+        victims_count = {}
+        for (entry,) in kill_entries:
+            # Format wpisu: "⚔️ Zabił <Nick> (<Gildia>)"
+            match = re.search(r"⚔️ Zabił (.+?) \(", entry)
+            if match:
+                v_name = match.group(1).strip()
+                victims_count[v_name] = victims_count.get(v_name, 0) + 1
+
+        if victims_count:
+            top_victim = max(victims_count, key=victims_count.get)
+            victim_info = f"**{top_victim}** ({victims_count[top_victim]} razy)"
+
     cursor.close()
     conn.close()
-    return player_row, history_rows
+    return player_row, history_rows, nemesis_info, victim_info
 
 
 init_db()
@@ -336,7 +379,7 @@ URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-bot.remove_command("help")  # Usuwamy domyślną komendę help
+bot.remove_command("help")
 
 session = requests.Session()
 session.headers.update({
@@ -347,11 +390,11 @@ session.headers.update({
 player_guild_cache = {}
 
 # === ZMIENNE STANU BITKI ===
-is_bitka_active = False  # Czy trwa obecnie bitka?
-bitka_buffer = []  # Wszystkie fragi z obecnej bitki
-pre_bitka_buffer = []  # Fragi przed osiągnięciem progu 5
-last_frag_time = None  # Czas ostatniego fraga
-bitka_start_time = None  # Czas rozpoczęcia bitki
+is_bitka_active = False
+bitka_buffer = []
+pre_bitka_buffer = []
+last_frag_time = None
+bitka_start_time = None
 
 
 def fetch_guild_from_profile(player_name):
@@ -480,7 +523,6 @@ def parse_frag_line(row_element):
 
 
 async def send_bitka_start(channel):
-    """Wysyła PIERWSZY i JEDYNY ping na start bitki."""
     role = discord.utils.get(channel.guild.roles, name="bitka")
     role_mention = role.mention if role else "@bitka"
 
@@ -505,7 +547,6 @@ async def send_bitka_start(channel):
 
 
 async def send_bitka_summary(channel):
-    """Wysyła podsumowanie KOŃCOWE w tradycyjnym formacie tekstowym."""
     global is_bitka_active, bitka_buffer, last_frag_time, bitka_start_time
 
     if not bitka_buffer:
@@ -513,9 +554,9 @@ async def send_bitka_summary(channel):
 
     total_frags = len(bitka_buffer)
 
-    guild_stats = {}  # {guild: [frags, kills, deaths]}
-    player_stats = {}  # {player: [guild, frags, kills, deaths]}
-    guild_members = {}  # {guild: set(players)}
+    guild_stats = {}
+    player_stats = {}
+    guild_members = {}
 
     for killer, killer_guild, victim, victim_guild in bitka_buffer:
         for g in [killer_guild, victim_guild]:
@@ -718,7 +759,6 @@ async def on_ready():
 
 @bot.command(name="koniecbitki", aliases=["endbitka"])
 async def end_bitka(ctx):
-    """Ręcznie kończy trwającą bitkę i generuje jej podsumowanie."""
     global is_bitka_active
 
     if not is_bitka_active:
@@ -731,7 +771,6 @@ async def end_bitka(ctx):
 
 @bot.command(name="pomoc", aliases=["help"])
 async def pomoc(ctx):
-    """Wyświetla listę wszystkich dostępnych komend bota."""
     embed = discord.Embed(
         title="📜 Lista Dostępnych Komend Bota",
         description="Wszystkie komendy rozpoczynają się od przedrostka `!`",
@@ -756,7 +795,7 @@ async def pomoc(ctx):
 
     embed.add_field(
         name="👤 Informacje o Graczu",
-        value="`!gracz <nick>` — Pokazuje szczegółowe statystyki oraz 5 ostatnich starć wybranego gracza.",
+        value="`!gracz <nick>` — Wyświetla K/D ratio, Nemezis, Ulubioną ofiarę oraz 5 ostatnich starć.",
         inline=False,
     )
 
@@ -793,7 +832,6 @@ async def top_guilds(ctx):
 
 @bot.command(name="topgracze")
 async def top_players(ctx):
-    """Wyświetla TOP 10 graczy pod względem liczby frags."""
     top_list = await asyncio.to_thread(get_top_players_data)
     if not top_list:
         await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
@@ -823,7 +861,6 @@ async def top_players(ctx):
 
 @bot.command(name="top24h")
 async def top_players_24h(ctx):
-    """Wyświetla TOP 5 graczy z ostatnich 24 godzin."""
     top_list = await asyncio.to_thread(get_top_players_24h_data)
     if not top_list:
         await ctx.send("Brak fragów w ostatnich 24 godzinach.")
@@ -853,7 +890,9 @@ async def top_players_24h(ctx):
 
 @bot.command(name="gracz")
 async def player_info(ctx, *, player_name: str):
-    player_row, history = await asyncio.to_thread(get_player_data, player_name)
+    player_row, history, nemesis, victim = await asyncio.to_thread(
+        get_player_data, player_name
+    )
     if not player_row:
         await ctx.send(f"Nie znaleziono danych dla gracza **{player_name}**.")
         return
@@ -866,6 +905,9 @@ async def player_info(ctx, *, player_name: str):
     embed.add_field(
         name="Kills / Deaths", value=f"`{kills}` / `{deaths}`", inline=True
     )
+
+    embed.add_field(name="👿 Nemezis", value=nemesis, inline=False)
+    embed.add_field(name="🎯 Ulubiona Ofiara", value=victim, inline=False)
 
     if history:
         embed.add_field(

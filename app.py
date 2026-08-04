@@ -96,25 +96,36 @@ def is_frag_processed(frag_text):
     return row is not None
 
 
-def mark_frag_processed(frag_text):
+def mark_frags_processed_batch(frag_texts):
+    """Szybki zapis zbiorczy wielu fragów w 1 zapytaniu do bazy."""
+    if not frag_texts:
+        return
+
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
-    ph = "%s" if db_type == "pg" else "?"
 
-    if db_type == "pg":
-        cursor.execute(
-            "INSERT INTO processed_frags (frag_hash) VALUES (%s) ON CONFLICT DO NOTHING",
-            (frag_text,),
-        )
-    else:
-        cursor.execute(
-            "INSERT OR IGNORE INTO processed_frags (frag_hash) VALUES (?)",
-            (frag_text,),
-        )
-
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        if db_type == "pg":
+            args_str = ",".join(
+                cursor.mogrify("(%s)", (text,)).decode("utf-8")
+                for text in frag_texts
+            )
+            cursor.execute(f"""
+                INSERT INTO processed_frags (frag_hash) 
+                VALUES {args_str} 
+                ON CONFLICT (frag_hash) DO NOTHING
+            """)
+        else:
+            cursor.executemany(
+                "INSERT OR IGNORE INTO processed_frags (frag_hash) VALUES (?)",
+                [(text,) for text in frag_texts],
+            )
+        conn.commit()
+    except Exception as e:
+        print(f"Błąd podczas zapisywania fragów: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def record_kill_and_death(killer, killer_guild, victim, victim_guild):
@@ -534,6 +545,7 @@ async def check_frags():
         rows = list(soup.find_all("tr"))
 
         now = datetime.now(timezone.utc)
+        new_processed_frags = []
 
         for row in reversed(rows):
             row_text = row.get_text(strip=True)
@@ -565,7 +577,10 @@ async def check_frags():
                             pre_bitka_buffer.clear()
                             await send_bitka_start(channel)
 
-                mark_frag_processed(row_text)
+                new_processed_frags.append(row_text)
+
+        if new_processed_frags:
+            mark_frags_processed_batch(new_processed_frags)
 
         if not is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() > 180:
@@ -590,14 +605,17 @@ async def on_ready():
     try:
         res = session.get(URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
-        for row in soup.find_all("tr"):
-            row_text = row.get_text(strip=True)
-            if row_text:
-                mark_frag_processed(row_text)
-    except Exception:
-        pass
+        initial_frags = [
+            row.get_text(strip=True)
+            for row in soup.find_all("tr")
+            if row.get_text(strip=True)
+        ]
+        mark_frags_processed_batch(initial_frags)
+    except Exception as e:
+        print(f"Błąd podczas inicjalizacji startowej: {e}")
 
-    check_frags.start()
+    if not check_frags.is_running():
+        check_frags.start()
 
 
 @bot.command(name="top")

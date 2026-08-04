@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import sqlite3
@@ -540,7 +541,8 @@ async def check_frags():
         return
 
     try:
-        res = session.get(URL_FRAGS, timeout=10)
+        # POBIERANIE STRONY W ODRĘBNYM WĄTKU (BEZ BLOKOWANIA ASYNCIO)
+        res = await asyncio.to_thread(session.get, URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
         rows = list(soup.find_all("tr"))
 
@@ -552,14 +554,24 @@ async def check_frags():
             if not row_text or len(row_text) < 10:
                 continue
 
-            if not is_frag_processed(row_text):
+            # SPRAWDZANIE W BAZIE W ODRĘBNYM WĄTKU
+            processed = await asyncio.to_thread(is_frag_processed, row_text)
+            if not processed:
                 killer, victim = parse_frag_line(row)
                 if killer and victim:
-                    killer_guild = fetch_guild_from_profile(killer)
-                    victim_guild = fetch_guild_from_profile(victim)
+                    killer_guild = await asyncio.to_thread(
+                        fetch_guild_from_profile, killer
+                    )
+                    victim_guild = await asyncio.to_thread(
+                        fetch_guild_from_profile, victim
+                    )
 
-                    record_kill_and_death(
-                        killer, killer_guild, victim, victim_guild
+                    await asyncio.to_thread(
+                        record_kill_and_death,
+                        killer,
+                        killer_guild,
+                        victim,
+                        victim_guild,
                     )
 
                     frag_data = (killer, killer_guild, victim, victim_guild)
@@ -580,7 +592,9 @@ async def check_frags():
                 new_processed_frags.append(row_text)
 
         if new_processed_frags:
-            mark_frags_processed_batch(new_processed_frags)
+            await asyncio.to_thread(
+                mark_frags_processed_batch, new_processed_frags
+            )
 
         if not is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() > 180:
@@ -603,14 +617,14 @@ async def on_ready():
     print(f"Zalogowano jako {bot.user.name}")
 
     try:
-        res = session.get(URL_FRAGS, timeout=10)
+        res = await asyncio.to_thread(session.get, URL_FRAGS, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
         initial_frags = [
             row.get_text(strip=True)
             for row in soup.find_all("tr")
             if row.get_text(strip=True)
         ]
-        mark_frags_processed_batch(initial_frags)
+        await asyncio.to_thread(mark_frags_processed_batch, initial_frags)
     except Exception as e:
         print(f"Błąd podczas inicjalizacji startowej: {e}")
 
@@ -620,7 +634,7 @@ async def on_ready():
 
 @bot.command(name="top")
 async def top_guilds(ctx):
-    top_guilds_list = get_top_guilds_data()
+    top_guilds_list = await asyncio.to_thread(get_top_guilds_data)
     if not top_guilds_list:
         await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
         return
@@ -638,7 +652,7 @@ async def top_guilds(ctx):
 
 @bot.command(name="gracz")
 async def player_info(ctx, *, player_name: str):
-    player_row, history = get_player_data(player_name)
+    player_row, history = await asyncio.to_thread(get_player_data, player_name)
     if not player_row:
         await ctx.send(f"Nie znaleziono danych dla gracza **{player_name}**.")
         return

@@ -475,4 +475,177 @@ async def send_bitka_summary(channel):
             formatted_chunk = f"```text\n{chunk}\n```"
             await channel.send(formatted_chunk)
     else:
-        formatted_full = f"```text\n{full_text}\n
+        formatted_full = f"```text\n{full_text}\n```"
+        await channel.send(formatted_full)
+
+    # Resetowanie zmiennych
+    is_bitka_active = False
+    bitka_buffer.clear()
+    pre_bitka_buffer.clear()
+    last_frag_time = None
+    bitka_start_time = None
+
+
+@tasks.loop(seconds=5)
+async def check_frags():
+    global is_bitka_active, bitka_buffer, pre_bitka_buffer, last_frag_time, bitka_start_time
+
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        return
+
+    try:
+        res = session.get(URL_FRAGS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = list(soup.find_all("tr"))
+
+        now = datetime.now(timezone.utc)
+
+        for row in reversed(rows):
+            row_text = row.get_text(strip=True)
+            if not row_text or len(row_text) < 10:
+                continue
+
+            if not is_frag_processed(row_text):
+                killer, victim = parse_frag_line(row)
+                if killer and victim:
+                    killer_guild = fetch_guild_from_profile(killer)
+                    victim_guild = fetch_guild_from_profile(victim)
+
+                    record_kill_and_death(
+                        killer, killer_guild, victim, victim_guild
+                    )
+
+                    frag_data = (killer, killer_guild, victim, victim_guild)
+                    last_frag_time = now
+
+                    if is_bitka_active:
+                        bitka_buffer.append(frag_data)
+                    else:
+                        pre_bitka_buffer.append(frag_data)
+
+                        # Gdy wpadnie przynajmniej 5 fragów w oknie czasowym
+                        if len(pre_bitka_buffer) >= 5:
+                            is_bitka_active = True
+                            bitka_start_time = datetime.now()
+                            bitka_buffer = list(pre_bitka_buffer)
+                            pre_bitka_buffer.clear()
+                            await send_bitka_start(channel)
+
+                mark_frag_processed(row_text)
+
+        # 1. Kasowanie wstępnego bufora po 3 minutach bez 5 fragów
+        if not is_bitka_active and last_frag_time:
+            if (now - last_frag_time).total_seconds() > 180:
+                pre_bitka_buffer.clear()
+                last_frag_time = None
+
+        # 2. Wykrywanie końca bitki po 10 minutach (600 sek) braku zabójstw
+        if is_bitka_active and last_frag_time:
+            if (now - last_frag_time).total_seconds() >= 600:
+                await send_bitka_summary(channel)
+
+    except Exception as e:
+        print(f"Błąd pętli: {e}")
+
+
+@bot.event
+async def on_ready():
+    global start_time
+    if start_time is None:
+        start_time = datetime.now(timezone.utc)
+    print(f"Zalogowano jako {bot.user.name}")
+
+    try:
+        res = session.get(URL_FRAGS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        for row in soup.find_all("tr"):
+            row_text = row.get_text(strip=True)
+            if row_text:
+                mark_frag_processed(row_text)
+    except Exception:
+        pass
+
+    check_frags.start()
+
+
+@bot.command(name="top")
+async def top_guilds(ctx):
+    top_guilds_list = get_top_guilds_data()
+    if not top_guilds_list:
+        await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
+        return
+
+    embed = discord.Embed(
+        title="🏆 Ranking Gildii", color=discord.Color.gold()
+    )
+    for guild, kills, deaths in top_guilds_list:
+        embed.add_field(
+            name=f"🛡️ {guild}",
+            value=f"Kills: `{kills}` | Deaths: `{deaths}`",
+            inline=False,
+        )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="gracz")
+async def player_info(ctx, *, player_name: str):
+    player_row, history = get_player_data(player_name)
+    if not player_row:
+        await ctx.send(f"Nie znaleziono danych dla gracza **{player_name}**.")
+        return
+
+    exact_name, guild, kills, deaths = player_row
+    embed = discord.Embed(
+        title=f"👤 Statystyki: {exact_name}", color=discord.Color.blue()
+    )
+    embed.add_field(name="Gildia", value=guild, inline=True)
+    embed.add_field(
+        name="Kills / Deaths", value=f"`{kills}` / `{deaths}`", inline=True
+    )
+
+    if history:
+        embed.add_field(
+            name="Ostatnie starcia", value="\n".join(history), inline=False
+        )
+    else:
+        embed.add_field(
+            name="Ostatnie starcia", value="Brak wpisów", inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="status")
+async def status(ctx):
+    if start_time is None:
+        await ctx.send("Bot dopiero się uruchamia...")
+        return
+
+    now = datetime.now(timezone.utc)
+    uptime = now - start_time
+    dni = uptime.days
+    godziny, remainder = divmod(uptime.seconds, 3600)
+    minuty, sekundy = divmod(remainder, 60)
+
+    embed = discord.Embed(
+        title="📊 Status Bota", color=discord.Color.green(), timestamp=now
+    )
+    embed.add_field(name="Stan", value="🟢 Online (24/7)", inline=False)
+    embed.add_field(
+        name="Czas działania (Uptime)",
+        value=f"{dni}d {godziny}h {minuty}m {sekundy}s",
+        inline=False,
+    )
+    embed.add_field(
+        name="Opóźnienie (Ping)",
+        value=f"{round(bot.latency * 1000)} ms",
+        inline=False,
+    )
+    embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
+
+    await ctx.send(embed=embed)
+
+
+bot.run(DISCORD_TOKEN)

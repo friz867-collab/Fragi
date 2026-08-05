@@ -21,8 +21,10 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===
+# === KONFIGURACJA FILTRU ===
+MAX_LEVEL_DIFF = 500  # Maksymalna różnica leveli
 
+# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===
 
 def get_db_connection():
     """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""
@@ -54,6 +56,14 @@ def init_db():
                 entry_text TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS abuse_logs (
+                id SERIAL PRIMARY KEY,
+                killer TEXT,
+                killer_lvl INTEGER,
+                victim TEXT,
+                victim_lvl INTEGER,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
     else:
         cursor.execute("""
@@ -75,6 +85,16 @@ def init_db():
                 player_name TEXT,
                 entry_text TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS abuse_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                killer TEXT,
+                killer_lvl INTEGER,
+                victim TEXT,
+                victim_lvl INTEGER,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -206,6 +226,32 @@ def record_kill_and_death(killer, killer_guild, victim, victim_guild):
     cursor.close()
     conn.close()
 
+def log_abuse(killer, killer_lvl, victim, victim_lvl):
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        if db_type == "pg":
+            cursor.execute(
+                """
+                INSERT INTO abuse_logs (killer, killer_lvl, victim, victim_lvl)
+                VALUES (%s, %s, %s, %s)
+            """,
+                (killer, killer_lvl, victim, victim_lvl),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO abuse_logs (killer, killer_lvl, victim, victim_lvl)
+                VALUES (?, ?, ?, ?)
+            """,
+                (killer, killer_lvl, victim, victim_lvl),
+            )
+        conn.commit()
+    except Exception as e:
+        print(f"Błąd logowania nadużycia: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 def get_top_guilds_data():
     conn, db_type = get_db_connection()
@@ -533,6 +579,11 @@ def fetch_guild_from_profile(player_name):
 
 def parse_frag_line(row_element):
     try:
+        row_text = " ".join(row_element.text.split())
+        killer, victim = None, None
+        killer_lvl, victim_lvl = 0, 0
+
+        # W pierwszej kolejności używamy linków (Twoja poprzednia logika)
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -547,60 +598,47 @@ def parse_frag_line(row_element):
                     char_links.append(text)
 
         if len(char_links) >= 2:
-            return char_links[1], char_links[0]
+            victim, killer = char_links[0], char_links[1]
 
-        row_text = " ".join(row_element.text.split())
-
-        row_text = re.sub(
-            r"([a-zA-Z0-9])killed", r"\1 killed", row_text, flags=re.IGNORECASE
-        )
-        row_text = re.sub(
-            r"killed([a-zA-Z0-9])", r"killed \1", row_text, flags=re.IGNORECASE
-        )
-        row_text = re.sub(
-            r"([a-zA-Z0-9])by", r"\1 by", row_text, flags=re.IGNORECASE
-        )
-        row_text = re.sub(
-            r"by([a-zA-Z0-9])", r"by \1", row_text, flags=re.IGNORECASE
-        )
-
+        # W drugiej kolejności formatujemy cały tekst aby wyciągnąć levele (i imiona, jeśli linki zawiodły)
+        row_text = re.sub(r"([a-zA-Z0-9])killed", r"\1 killed", row_text, flags=re.IGNORECASE)
+        row_text = re.sub(r"killed([a-zA-Z0-9])", r"killed \1", row_text, flags=re.IGNORECASE)
+        row_text = re.sub(r"([a-zA-Z0-9])by", r"\1 by", row_text, flags=re.IGNORECASE)
+        row_text = re.sub(r"by([a-zA-Z0-9])", r"by \1", row_text, flags=re.IGNORECASE)
         row_text = re.sub(r"^\d+\s+", "", row_text)
 
         if " killed " in row_text.lower() and " by " in row_text.lower():
             parts = re.split(r"\s+by\s+", row_text, flags=re.IGNORECASE)
-
+            
+            # --- ZABÓJCA (pobieranie poziomu, lub imienia jeśli brak z linku) ---
             killer_raw = parts[1].split("->")[0].strip()
-            killer = re.sub(
-                r"\s+(at\s+)?level\s+\d+.*$", "", killer_raw, flags=re.IGNORECASE
-            ).strip()
+            killer_lvl_match = re.search(r"(?:at\s+)?level\s+(\d+)", killer_raw, re.IGNORECASE)
+            if killer_lvl_match:
+                killer_lvl = int(killer_lvl_match.group(1))
+            
+            if not killer:
+                 killer = re.sub(r"\s+(at\s+)?level\s+\d+.*$", "", killer_raw, flags=re.IGNORECASE).strip()
 
-            victim_part = re.split(
-                r"\s+killed\s+", parts[0], flags=re.IGNORECASE
-            )[0]
+            # --- OFIARA (pobieranie poziomu, lub imienia jeśli brak z linku) ---
+            victim_part = re.split(r"\s+killed\s+", parts[0], flags=re.IGNORECASE)[0]
+            victim_cleaned = re.sub(r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*", "", victim_part).strip()
+            
+            victim_lvl_match = re.search(r"(?:at\s+)?level\s+(\d+)", victim_cleaned, re.IGNORECASE)
+            if victim_lvl_match:
+                victim_lvl = int(victim_lvl_match.group(1))
 
-            victim_cleaned = re.sub(
-                r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*",
-                "",
-                victim_part,
-            ).strip()
-
-            victim_words = victim_cleaned.split()
-            clean_words = [
-                w
-                for w in victim_words
-                if not w.isdigit()
-                and not w.endswith(":")
-                and w.lower() not in ["level", "at"]
-            ]
-            victim = " ".join(clean_words).strip()
+            if not victim:
+                victim_words = victim_cleaned.split()
+                clean_words = [w for w in victim_words if not w.isdigit() and not w.endswith(":") and w.lower() not in ["level", "at"]]
+                victim = " ".join(clean_words).strip()
 
             if killer and victim:
-                return killer, victim
+                return killer, killer_lvl, victim, victim_lvl
 
     except Exception as e:
         print(f"Błąd parsowania linii: {e}")
 
-    return None, None
+    return None, 0, None, 0
 
 
 async def send_bitka_start(channel):
@@ -621,6 +659,7 @@ async def send_bitka_start(channel):
     embed.add_field(
         name="Początkowe starcia", value="\n".join(lines), inline=False
     )
+    embed.set_footer(text=f"Filtr nadużyć włączony: max {MAX_LEVEL_DIFF} lvl różnicy")
 
     await channel.send(
         content=f"🚨 {role_mention} Właśnie trwa bitka!", embed=embed
@@ -760,8 +799,18 @@ async def check_frags():
 
             processed = await asyncio.to_thread(is_frag_processed, row_text)
             if not processed:
-                killer, victim = parse_frag_line(row)
+                killer, killer_lvl, victim, victim_lvl = parse_frag_line(row)
                 if killer and victim:
+                    
+                    # --- FILTR ABUSERKI ---
+                    if killer_lvl > 0 and victim_lvl > 0:
+                        lvl_diff = abs(killer_lvl - victim_lvl)
+                        if lvl_diff > MAX_LEVEL_DIFF:
+                            print(f"⚠️ [ABUSE FILTER] Zignorowano frag: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl) - Różnica: {lvl_diff} lvl")
+                            await asyncio.to_thread(log_abuse, killer, killer_lvl, victim, victim_lvl)
+                            new_processed_frags.append(row_text) # Oznaczamy jako przetworzony, żeby nie sprawdzać co 5 sekund
+                            continue
+                            
                     killer_guild = await asyncio.to_thread(
                         fetch_guild_from_profile, killer
                     )

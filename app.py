@@ -583,7 +583,7 @@ def parse_frag_line(row_element):
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
-        # W pierwszej kolejności używamy linków (Twoja poprzednia logika)
+        # 1. Wyciąganie nicków z linków (jeśli istnieją)
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -600,40 +600,43 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # W drugiej kolejności formatujemy cały tekst aby wyciągnąć levele (i imiona, jeśli linki zawiodły)
-        row_text = re.sub(r"([a-zA-Z0-9])killed", r"\1 killed", row_text, flags=re.IGNORECASE)
-        row_text = re.sub(r"killed([a-zA-Z0-9])", r"killed \1", row_text, flags=re.IGNORECASE)
-        row_text = re.sub(r"([a-zA-Z0-9])by", r"\1 by", row_text, flags=re.IGNORECASE)
-        row_text = re.sub(r"by([a-zA-Z0-9])", r"by \1", row_text, flags=re.IGNORECASE)
-        row_text = re.sub(r"^\d+\s+", "", row_text)
-
-        if " killed " in row_text.lower() and " by " in row_text.lower():
+        # 2. Rozbijanie tekstu na część z ofiarą i zabójcą
+        if " killed by " in row_text.lower():
+            parts = re.split(r"\s+killed by\s+", row_text, flags=re.IGNORECASE)
+            victim_part = parts[0]
+            killer_part = parts[1]
+        elif " killed " in row_text.lower() and " by " in row_text.lower():
             parts = re.split(r"\s+by\s+", row_text, flags=re.IGNORECASE)
-            
-            # --- ZABÓJCA (pobieranie poziomu, lub imienia jeśli brak z linku) ---
-            killer_raw = parts[1].split("->")[0].strip()
-            killer_lvl_match = re.search(r"(?:at\s+)?level\s+(\d+)", killer_raw, re.IGNORECASE)
-            if killer_lvl_match:
-                killer_lvl = int(killer_lvl_match.group(1))
-            
-            if not killer:
-                 killer = re.sub(r"\s+(at\s+)?level\s+\d+.*$", "", killer_raw, flags=re.IGNORECASE).strip()
-
-            # --- OFIARA (pobieranie poziomu, lub imienia jeśli brak z linku) ---
+            killer_part = parts[1]
             victim_part = re.split(r"\s+killed\s+", parts[0], flags=re.IGNORECASE)[0]
-            victim_cleaned = re.sub(r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*", "", victim_part).strip()
-            
-            victim_lvl_match = re.search(r"(?:at\s+)?level\s+(\d+)", victim_cleaned, re.IGNORECASE)
-            if victim_lvl_match:
-                victim_lvl = int(victim_lvl_match.group(1))
+        else:
+            return None, 0, None, 0
 
-            if not victim:
-                victim_words = victim_cleaned.split()
-                clean_words = [w for w in victim_words if not w.isdigit() and not w.endswith(":") and w.lower() not in ["level", "at"]]
-                victim = " ".join(clean_words).strip()
+        # --- POBIERANIE POZIOMU OFIARY ---
+        # Dopasowuje zarówno "1260 level Lamaczkosci" jak i "Lamaczkosci level 1260" / "at level 1260"
+        v_lvl_match = re.search(r"(\d+)\s*level|level\s*(\d+)", victim_part, re.IGNORECASE)
+        if v_lvl_match:
+            victim_lvl = int(v_lvl_match.group(1) or v_lvl_match.group(2))
 
-            if killer and victim:
-                return killer, killer_lvl, victim, victim_lvl
+        # --- POBIERANIE POZIOMU ZABÓJCY ---
+        # Dopasowuje zarówno "2494 level" jak i "level 2494"
+        k_lvl_match = re.search(r"(\d+)\s*level|level\s*(\d+)", killer_part, re.IGNORECASE)
+        if k_lvl_match:
+            killer_lvl = int(k_lvl_match.group(1) or k_lvl_match.group(2))
+
+        # --- REZERWOWE POBIERANIE NICKÓW (jeśli linków nie było w HTML) ---
+        if not victim:
+            v_clean = re.sub(r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*", "", victim_part)
+            v_clean = re.sub(r"\d+\s*level|level\s*\d+|at", "", v_clean, flags=re.IGNORECASE).strip()
+            victim = v_clean
+
+        if not killer:
+            k_clean = killer_part.split("->")[0]
+            k_clean = re.sub(r"\d+\s*level|level\s*\d+|at", "", k_clean, flags=re.IGNORECASE).strip()
+            killer = k_clean
+
+        if killer and victim:
+            return killer, killer_lvl, victim, victim_lvl
 
     except Exception as e:
         print(f"Błąd parsowania linii: {e}")

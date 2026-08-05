@@ -226,6 +226,7 @@ def record_kill_and_death(killer, killer_guild, victim, victim_guild):
     cursor.close()
     conn.close()
 
+
 def log_abuse(killer, killer_lvl, victim, victim_lvl):
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
@@ -252,6 +253,7 @@ def log_abuse(killer, killer_lvl, victim, victim_lvl):
     finally:
         cursor.close()
         conn.close()
+
 
 def get_top_guilds_data():
     conn, db_type = get_db_connection()
@@ -406,12 +408,10 @@ def get_player_data(player_name):
 
 
 def get_guild_confrontations_data(guild_name):
-    """Pobiera statystyki konfrontacji danej gildii ze wszystkimi innymi gildiami."""
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     ph = "%s" if db_type == "pg" else "?"
 
-    # Pobieramy graczy należących do danej gildii (z dopasowaniem bez względu na wielkość liter)
     cursor.execute(
         f"""
         SELECT player_name, guild_name FROM player_stats
@@ -433,7 +433,6 @@ def get_guild_confrontations_data(guild_name):
     total_guild_kills = 0
     total_guild_deaths = 0
 
-    # Pobieramy historię fragów dla wszystkich członków danej gildii
     for p_name in player_names:
         cursor.execute(
             f"""
@@ -445,7 +444,6 @@ def get_guild_confrontations_data(guild_name):
         entries = cursor.fetchall()
 
         for (entry,) in entries:
-            # 1. Członek gildii kogoś zabił
             if "Zabił" in entry:
                 match = re.search(r"Zabił .+? \((.+?)\)", entry)
                 if match:
@@ -456,7 +454,6 @@ def get_guild_confrontations_data(guild_name):
                         confrontations[opp_guild]["kills"] += 1
                         total_guild_kills += 1
 
-            # 2. Członek gildii zginął od kogoś
             elif "Zginął od" in entry:
                 match = re.search(r"Zginął od .+? \((.+?)\)", entry)
                 if match:
@@ -583,7 +580,7 @@ def parse_frag_line(row_element):
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
-        # 1. Wyciąganie nicków z linków (jeśli istnieją)
+        # 1. Pobieranie nicków z linków <a>
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -600,40 +597,24 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # 2. Rozbijanie tekstu na część z ofiarą i zabójcą
-        if " killed by " in row_text.lower():
-            parts = re.split(r"\s+killed by\s+", row_text, flags=re.IGNORECASE)
-            victim_part = parts[0]
-            killer_part = parts[1]
-        elif " killed " in row_text.lower() and " by " in row_text.lower():
-            parts = re.split(r"\s+by\s+", row_text, flags=re.IGNORECASE)
-            killer_part = parts[1]
-            victim_part = re.split(r"\s+killed\s+", parts[0], flags=re.IGNORECASE)[0]
-        else:
-            return None, 0, None, 0
+        # 2. Szukanie WSZYSTKICH poziomów w całej linijce (szukamy wzorca: cyfry + opcjonalny tekst + level)
+        levels_found = [
+            int(s)
+            for s in re.findall(
+                r"(\d+)\s*(?:lvl|level)", row_text, re.IGNORECASE
+            )
+        ]
 
-        # --- POBIERANIE POZIOMU OFIARY ---
-        # Dopasowuje zarówno "1260 level Lamaczkosci" jak i "Lamaczkosci level 1260" / "at level 1260"
-        v_lvl_match = re.search(r"(\d+)\s*level|level\s*(\d+)", victim_part, re.IGNORECASE)
-        if v_lvl_match:
-            victim_lvl = int(v_lvl_match.group(1) or v_lvl_match.group(2))
+        # Jeśli wzorzec z "level" nie zadziałał, wyciągamy po prostu pierwsze dwie duże liczby z tekstu
+        if len(levels_found) < 2:
+            numbers = [int(s) for s in re.findall(r"\b\d{3,5}\b", row_text)]
+            if len(numbers) >= 2:
+                levels_found = numbers
 
-        # --- POBIERANIE POZIOMU ZABÓJCY ---
-        # Dopasowuje zarówno "2494 level" jak i "level 2494"
-        k_lvl_match = re.search(r"(\d+)\s*level|level\s*(\d+)", killer_part, re.IGNORECASE)
-        if k_lvl_match:
-            killer_lvl = int(k_lvl_match.group(1) or k_lvl_match.group(2))
-
-        # --- REZERWOWE POBIERANIE NICKÓW (jeśli linków nie było w HTML) ---
-        if not victim:
-            v_clean = re.sub(r"^\d{4}[\.\/-]\d{2}[\.\/-]\d{2}\s+\d{2}:\d{2}:\d{2}\s*", "", victim_part)
-            v_clean = re.sub(r"\d+\s*level|level\s*\d+|at", "", v_clean, flags=re.IGNORECASE).strip()
-            victim = v_clean
-
-        if not killer:
-            k_clean = killer_part.split("->")[0]
-            k_clean = re.sub(r"\d+\s*level|level\s*\d+|at", "", k_clean, flags=re.IGNORECASE).strip()
-            killer = k_clean
+        # Pierwszy level na stronie należy do ofiary, drugi do zabójcy
+        if len(levels_found) >= 2:
+            victim_lvl = levels_found[0]
+            killer_lvl = levels_found[1]
 
         if killer and victim:
             return killer, killer_lvl, victim, victim_lvl
@@ -811,7 +792,7 @@ async def check_frags():
                         if lvl_diff > MAX_LEVEL_DIFF:
                             print(f"⚠️ [ABUSE FILTER] Zignorowano frag: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl) - Różnica: {lvl_diff} lvl")
                             await asyncio.to_thread(log_abuse, killer, killer_lvl, victim, victim_lvl)
-                            new_processed_frags.append(row_text) # Oznaczamy jako przetworzony, żeby nie sprawdzać co 5 sekund
+                            new_processed_frags.append(row_text)
                             continue
                             
                     killer_guild = await asyncio.to_thread(
@@ -1083,7 +1064,6 @@ async def guild_info(ctx, *, guild_name: str):
             inline=False,
         )
     else:
-        # Sortowanie konfrontacji według łącznej liczby starć
         sorted_conf = sorted(
             conf_data.items(),
             key=lambda item: item[1]["kills"] + item[1]["deaths"],

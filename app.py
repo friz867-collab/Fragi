@@ -748,6 +748,9 @@ async def send_bitka_summary(channel):
     guild_stats = {}
     player_stats = {}
     guild_members = {}
+    
+    # Słownik do zliczania bezpośrednich starć graczy (Kto -> Kogo)
+    direct_matchups = {}
 
     for killer, killer_guild, victim, victim_guild in bitka_buffer:
         for g in [killer_guild, victim_guild]:
@@ -769,6 +772,10 @@ async def send_bitka_summary(channel):
 
         guild_stats[victim_guild]["deaths"] += 1
         player_stats[victim]["deaths"] += 1
+        
+        # Logowanie bezpośredniego pojedynku
+        matchup_key = (killer, killer_guild, victim, victim_guild)
+        direct_matchups[matchup_key] = direct_matchups.get(matchup_key, 0) + 1
 
     mvp_player = "Brak"
     max_kills = -1
@@ -837,6 +844,16 @@ async def send_bitka_summary(channel):
         report.append(f"• {g_name} ({len(m_list)}): {names_str}")
         report.append("")
 
+    # === NOWA SEKĆJA: KTO KOGO ZABIŁ W BITWIE ===
+    report.append("━" * 60)
+    report.append(" SZCZEGÓŁOWA LISTA FRAGÓW (Kto -> Kogo)")
+    report.append("━" * 60)
+    
+    sorted_matchups = sorted(direct_matchups.items(), key=lambda x: x[1], reverse=True)
+    for (k, kg, v, vg), count in sorted_matchups:
+        count_str = f"({count}x)" if count > 1 else ""
+        report.append(f"• {k} ({kg}) ⚔️ {v} ({vg}) {count_str}")
+        
     report.append("━" * 60)
 
     full_text = "\n".join(report)

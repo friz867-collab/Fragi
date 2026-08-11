@@ -28,7 +28,7 @@ MAX_LEVEL_DIFF = 500  # Maksymalna różnica leveli[cite: 2]
 # === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===[cite: 2]
 
 def get_db_connection():
-    """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""[cite: 2]
+    """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""
     if DATABASE_URL:
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
         return psycopg2.connect(url), "pg"

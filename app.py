@@ -660,21 +660,20 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        levels_found = [
-            int(s)
-            for s in re.findall(
-                r"(\d+)\s*(?:lvl|level)", row_text, re.IGNORECASE
-            )
-        ]
-
-        if len(levels_found) < 2:
-            numbers = [int(s) for s in re.findall(r"\b\d{3,5}\b", row_text)]
-            if len(numbers) >= 2:
-                levels_found = numbers
-
-        if len(levels_found) >= 2:
-            victim_lvl = levels_found[0]
-            killer_lvl = levels_found[1]
+        # --- ULEPSZONE WYCIĄGANIE POZIOMÓW ---
+        numbers = [int(s) for s in re.findall(r"\b\d+\b", row_text)]
+        
+        if len(numbers) >= 2:
+            victim_lvl = numbers[0]
+            killer_lvl = numbers[1]
+        else:
+            levels_found = [
+                int(s)
+                for s in re.findall(r"(\d+)\s*(?:lvl|level)", row_text, re.IGNORECASE)
+            ]
+            if len(levels_found) >= 2:
+                victim_lvl = levels_found[0]
+                killer_lvl = levels_found[1]
 
         if killer and victim:
             return killer, killer_lvl, victim, victim_lvl
@@ -846,10 +845,13 @@ async def check_frags():
                 killer, killer_lvl, victim, victim_lvl = parse_frag_line(row)
                 if killer and victim:
                     
+                    # LOG DO KONSOLI RENDERA
+                    print(f"🔍 [PARSER LOG] Wykryto: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl)")
+                    
                     if killer_lvl > 0 and victim_lvl > 0:
                         lvl_diff = abs(killer_lvl - victim_lvl)
                         if lvl_diff > MAX_LEVEL_DIFF:
-                            print(f"⚠️ [ABUSE FILTER] Zignorowano frag: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl) - Różnica: {lvl_diff} lvl")
+                            print(f"🛑 [ABUSE FILTER] ZABLOKOWANO FRAG: Różnica {lvl_diff} lvl (Max {MAX_LEVEL_DIFF})")
                             await asyncio.to_thread(log_abuse, killer, killer_lvl, victim, victim_lvl)
                             new_processed_frags.append(row_text)
                             continue

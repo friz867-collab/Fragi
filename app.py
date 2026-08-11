@@ -23,12 +23,12 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # === KONFIGURACJA FILTRU ===
-MAX_LEVEL_DIFF = 500  # Maksymalna różnica leveli
+MAX_LEVEL_DIFF = 500  # Maksymalna różnica leveli[cite: 2]
 
-# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===
+# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===[cite: 2]
 
 def get_db_connection():
-    """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""
+    """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""[cite: 2]
     if DATABASE_URL:
         url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
         return psycopg2.connect(url), "pg"
@@ -607,7 +607,7 @@ def keep_alive():
 keep_alive()
 
 # === KONFIGURACJA BOTA ===
-URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"
+URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"[cite: 2]
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -629,6 +629,7 @@ last_frag_time = None
 bitka_start_time = None
 
 
+# === PARSER GILDII ===
 def fetch_guild_from_profile(player_name):
     player_name = player_name.strip()
     if not player_name or len(player_name) > 25 or "->" in player_name:
@@ -637,9 +638,7 @@ def fetch_guild_from_profile(player_name):
         return player_guild_cache[player_name]
 
     safe_name = urllib.parse.quote(player_name)
-    url = (
-        f"http://dblots.org.pl/characters.php?lang=en&s=classic&char={safe_name}"
-    )
+    url = f"http://dblots.org.pl/characters.php?lang=en&s=classic&char={safe_name}"
 
     try:
         res = session.get(url, timeout=5)
@@ -649,49 +648,38 @@ def fetch_guild_from_profile(player_name):
         soup = BeautifulSoup(res.text, "html.parser")
         guild_name = "Bez Gildii"
 
-        for a in soup.find_all("a", href=True):
-            if "guilds.php" in a["href"].lower():
-                g_text = a.get_text(strip=True)
-                if g_text and g_text.lower() not in ["guilds", "view", "back"]:
-                    guild_name = g_text
+        for tr in soup.find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) >= 2:
+                first_td_text = tds[0].get_text(strip=True).lower()
+                if "guild:" in first_td_text:
+                    raw_val = tds[1].get_text(strip=True)
+                    if " of " in raw_val:
+                        guild_name = raw_val.split(" of ")[-1].strip()
+                    elif raw_val and "none" not in raw_val.lower():
+                        guild_name = raw_val
                     break
 
-        if guild_name == "Bez Gildii":
-            for tr in soup.find_all("tr"):
-                text = tr.get_text()
-                if (
-                    "member of" in text.lower()
-                    or "leader of" in text.lower()
-                    or "guild:" in text.lower()
-                ):
-                    tds = tr.find_all("td")
-                    if len(tds) >= 2:
-                        raw_val = tds[1].get_text(strip=True)
-                        if " of " in raw_val:
-                            guild_name = raw_val.split(" of ")[-1].strip()
-                        elif raw_val and "none" not in raw_val.lower():
-                            guild_name = raw_val
-                        break
-
-        if "->" in guild_name or len(guild_name) > 30 or "\n" in guild_name:
+        guild_name = re.sub(r'\s+', ' ', guild_name).strip()
+        if "->" in guild_name or len(guild_name) > 30 or not guild_name or guild_name.lower() == "none":
             guild_name = "Bez Gildii"
 
         player_guild_cache[player_name] = guild_name
         return guild_name
-    except Exception:
+    except Exception as e:
+        print(f"Błąd pobierania gildii dla {player_name}: {e}")
         return "Bez Gildii"
 
 
+# === ZMODYFIKOWANY I PRECYZYJNY PARSER LINII FRAGA ===
 def parse_frag_line(row_element):
     try:
         row_text = " ".join(row_element.text.split())
         
-        # Oczyszczamy tekst z daty i godziny na początku linii (np. "2026.08.11 15:59:01")
-        row_text_clean = re.sub(r'^\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2}', '', row_text).strip()
-        
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
+        # Wyciąganie nicków z linków profilowych
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -708,20 +696,12 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # Szukamy poziomów wyłącznie w tekście pozbawionym daty
-        numbers = [int(s) for s in re.findall(r"\b\d+\b", row_text_clean)]
-        
-        if len(numbers) >= 2:
-            victim_lvl = numbers[0]
-            killer_lvl = numbers[1]
-        else:
-            levels_found = [
-                int(s)
-                for s in re.findall(r"(\d+)\s*(?:lvl|level)", row_text_clean, re.IGNORECASE)
-            ]
-            if len(levels_found) >= 2:
-                victim_lvl = levels_found[0]
-                killer_lvl = levels_found[1]
+        # POPRAWKA FILTRU: Łapiemy liczby tylko z nawiasów przy nickach, ignorując datę/czas wiersza
+        levels_found = [int(lvl) for lvl in re.findall(r'(?:\[|\()(\d+)(?:\]|\))', row_text)]
+
+        if len(levels_found) >= 2:
+            victim_lvl = levels_found[0]
+            killer_lvl = levels_found[1]
 
         if killer and victim:
             return killer, killer_lvl, victim, victim_lvl
@@ -784,11 +764,9 @@ async def send_bitka_summary(channel):
         guild_members[killer_guild].add(killer)
         guild_members[victim_guild].add(victim)
 
-        # Naliczanie zabójstwa
         guild_stats[killer_guild]["kills"] += 1
         player_stats[killer]["kills"] += 1
 
-        # Naliczanie zgonu
         guild_stats[victim_guild]["deaths"] += 1
         player_stats[victim]["deaths"] += 1
 
@@ -799,7 +777,6 @@ async def send_bitka_summary(channel):
             max_kills = data["kills"]
             mvp_player = p_name
 
-    # --- KONWERSJA CZASU NA CZAS POLSKI ---
     tz_pl = ZoneInfo("Europe/Warsaw")
     
     if bitka_start_time:
@@ -851,7 +828,7 @@ async def send_bitka_summary(channel):
     report.append("")
     report.append(" BATTLE — UCZESTNICY GILDII")
     report.append("━" * 60)
-    report.append("SKŁARDS GILDII — OSTATNIA BITWA:")
+    report.append("SKŁADY GILDII — OSTATNIA BITWA:")
     report.append("")
 
     for g_name, _ in sorted_guilds:
@@ -864,7 +841,6 @@ async def send_bitka_summary(channel):
 
     full_text = "\n".join(report)
 
-    # Automatyczny zapis wygenerowanego raportu tekstowego do bazy danych
     await asyncio.to_thread(save_battle_report, full_text)
 
     if len(full_text) > 1900:
@@ -910,6 +886,7 @@ async def check_frags():
                     
                     print(f"🔍 [PARSER LOG] Wykryto: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl)")
                     
+                    # Weryfikacja filtru poziomów
                     if killer_lvl > 0 and victim_lvl > 0:
                         lvl_diff = abs(killer_lvl - victim_lvl)
                         if lvl_diff > MAX_LEVEL_DIFF:
@@ -1007,7 +984,6 @@ async def end_bitka(ctx):
 
 @bot.command(name="lastbattle", aliases=["ostatniabitka"])
 async def last_battle(ctx):
-    """Pobiera i wyświetla z bazy danych raport z ostatniej zakończonej bitki."""
     report_text = await asyncio.to_thread(get_last_battle_report)
     
     if not report_text:
@@ -1231,50 +1207,58 @@ async def battle_live(ctx):
         await ctx.send("Status: 🫥 Aktualnie nie ma żadnej aktywnej bitki w toku.")
         return
 
-    guild_stats = {}
-    player_stats = {}
+    try:
+        guild_stats = {}
+        player_stats = {}
 
-    for killer, killer_guild, victim, victim_guild in bitka_buffer:
-        for g in [killer_guild, victim_guild]:
-            if g not in guild_stats:
-                guild_stats[g] = [0, 0]
+        for killer, killer_guild, victim, victim_guild in bitka_buffer:
+            for g in [killer_guild, victim_guild]:
+                if g not in guild_stats:
+                    guild_stats[g] = [0, 0]
 
-        if killer not in player_stats:
-            player_stats[killer] = [killer_guild, 0]
+            if killer not in player_stats:
+                player_stats[killer] = [killer_guild, 0]
 
-        guild_stats[killer_guild][0] += 1
-        guild_stats[victim_guild][1] += 1
-        player_stats[killer][1] += 1
+            guild_stats[killer_guild][0] += 1
+            guild_stats[victim_guild][1] += 1
+            player_stats[killer][1] += 1
 
-    sorted_guilds = sorted(guild_stats.items(), key=lambda x: x[1][0], reverse=True)
-    sorted_players = sorted(player_stats.items(), key=lambda x: x[1][1], reverse=True)
+        sorted_guilds = sorted(guild_stats.items(), key=lambda x: x[1][0], reverse=True)
+        sorted_players = sorted(player_stats.items(), key=lambda x: x[1][1], reverse=True)
 
-    now = datetime.now()
-    duration = now - bitka_start_time if bitka_start_time else timedelta(0)
-    minutes, seconds = divmod(duration.seconds, 60)
+        now = datetime.now(timezone.utc)
+        duration = now - bitka_start_time if bitka_start_time else timedelta(0)
+        minutes, seconds = divmod(duration.seconds, 60)
 
-    embed = discord.Embed(
-        title="⚔️ WYNIKI LIVE TRWAJĄCEJ BITKI",
-        description=f"⏱️ Czas trwania starcia: **{minutes}m {seconds}s**\n📉 Łącznie fragów w buforze: `{len(bitka_buffer)}`",
-        color=discord.Color.red()
-    )
+        tz_pl = ZoneInfo("Europe/Warsaw")
+        time_pl_str = datetime.now(tz_pl).strftime('%H:%M:%S')
 
-    guilds_lines = []
-    for g_name, stat in sorted_guilds[:5]:
-        guilds_lines.append(f"• **{g_name}**: `{stat[0]}` zabójstw / `{stat[1]}` zgonów")
-    
-    if guilds_lines:
-        embed.add_field(name="🛡️ Klasyfikacja Gildii (Zabójstwa / Zgony)", value="\n".join(guilds_lines), inline=False)
+        embed = discord.Embed(
+            title="⚔️ WYNIKI LIVE TRWAJĄCEJ BITKI",
+            description=f"⏱️ Czas trwania starcia: **{minutes}m {seconds}s**\n📉 Łącznie fragów w buforze: `{len(bitka_buffer)}`",
+            color=discord.Color.red()
+        )
 
-    players_lines = []
-    for p_name, data in sorted_players[:5]:
-        players_lines.append(f"• **{p_name}** ({data[0]}) — `{data[1]}` Kills")
+        guilds_lines = []
+        for g_name, stat in sorted_guilds[:5]:
+            guilds_lines.append(f"• **{g_name}**: `{stat[0]}` zabójstw / `{stat[1]}` zgonów")
         
-    if players_lines:
-        embed.add_field(name="🔥 Najlepsi Fragerzy Starcia", value="\n".join(players_lines), inline=False)
+        if guilds_lines:
+            embed.add_field(name="🛡️ Klasyfikacja Gildii (Zabójstwa / Zgony)", value="\n".join(guilds_lines), inline=False)
 
-    embed.set_footer(text=f"Stan na godzinę {now.strftime('%H:%M:%S')} • Użyj !koniecbitki aby zamknąć starcie")
-    await ctx.send(embed=embed)
+        players_lines = []
+        for p_name, data in sorted_players[:5]:
+            players_lines.append(f"• **{p_name}** ({data[0]}) — `{data[1]}` Kills")
+            
+        if players_lines:
+            embed.add_field(name="🔥 Najlepsi Fragerzy Starcia", value="\n".join(players_lines), inline=False)
+
+        embed.set_footer(text=f"Stan na godzinę {time_pl_str} • Użyj !koniecbitki aby zamknąć starcie")
+        await ctx.send(embed=embed)
+
+    except Exception as e:
+        print(f"Błąd komendy !blive: {e}")
+        await ctx.send(f"❌ Wystąpił błąd podczas generowania podglądu live: `{e}`")
 
 
 @bot.command(name="gildia")
@@ -1359,7 +1343,6 @@ async def status(ctx):
     await ctx.send(embed=embed)
 
 
-# Uruchomienie bota z zabezpieczeniem tekstowym
 if DISCORD_TOKEN:
     bot.run(DISCORD_TOKEN)
 else:

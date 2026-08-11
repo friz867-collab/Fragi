@@ -641,6 +641,10 @@ def fetch_guild_from_profile(player_name):
 def parse_frag_line(row_element):
     try:
         row_text = " ".join(row_element.text.split())
+        
+        # Oczyszczamy tekst z daty i godziny na początku linii (np. "2026.08.11 15:59:01")
+        row_text_clean = re.sub(r'^\d{4}\.\d{2}\.\d{2}\s+\d{2}:\d{2}:\d{2}', '', row_text).strip()
+        
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
@@ -660,8 +664,8 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # --- ULEPSZONE WYCIĄGANIE POZIOMÓW ---
-        numbers = [int(s) for s in re.findall(r"\b\d+\b", row_text)]
+        # Szukamy poziomów wyłącznie w tekście pozbawionym daty
+        numbers = [int(s) for s in re.findall(r"\b\d+\b", row_text_clean)]
         
         if len(numbers) >= 2:
             victim_lvl = numbers[0]
@@ -669,7 +673,7 @@ def parse_frag_line(row_element):
         else:
             levels_found = [
                 int(s)
-                for s in re.findall(r"(\d+)\s*(?:lvl|level)", row_text, re.IGNORECASE)
+                for s in re.findall(r"(\d+)\s*(?:lvl|level)", row_text_clean, re.IGNORECASE)
             ]
             if len(levels_found) >= 2:
                 victim_lvl = levels_found[0]

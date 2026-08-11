@@ -65,6 +65,11 @@ def init_db():
                 victim_lvl INTEGER,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS battle_history (
+                id SERIAL PRIMARY KEY,
+                report_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
     else:
         cursor.execute("""
@@ -96,6 +101,13 @@ def init_db():
                 victim TEXT,
                 victim_lvl INTEGER,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS battle_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -251,6 +263,37 @@ def log_abuse(killer, killer_lvl, victim, victim_lvl):
         conn.commit()
     except Exception as e:
         print(f"Błąd logowania nadużycia: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def save_battle_report(report_text):
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        if db_type == "pg":
+            cursor.execute("INSERT INTO battle_history (report_text) VALUES (%s)", (report_text,))
+        else:
+            cursor.execute("INSERT INTO battle_history (report_text) VALUES (?)", (report_text,))
+        conn.commit()
+    except Exception as e:
+        print(f"Błąd zapisu raportu bitwy: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_last_battle_report():
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT report_text FROM battle_history ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"Błąd pobierania ostatniego raportu: {e}")
+        return None
     finally:
         cursor.close()
         conn.close()
@@ -760,7 +803,6 @@ async def send_bitka_summary(channel):
     tz_pl = ZoneInfo("Europe/Warsaw")
     
     if bitka_start_time:
-        # Jeśli bitka_start_time nie ma strefy (naive), nadajemy UTC i konwertujemy na PL
         if bitka_start_time.tzinfo is None:
             bitka_start = bitka_start_time.replace(tzinfo=timezone.utc).astimezone(tz_pl)
         else:
@@ -821,6 +863,9 @@ async def send_bitka_summary(channel):
     report.append("━" * 60)
 
     full_text = "\n".join(report)
+
+    # Automatyczny zapis wygenerowanego raportu tekstowego do bazy danych
+    await asyncio.to_thread(save_battle_report, full_text)
 
     if len(full_text) > 1900:
         chunks = [
@@ -905,7 +950,6 @@ async def check_frags():
 
                 new_processed_frags.append(row_text)
 
-        # Te cztery bloki poniżej muszą mieć dokładnie 8 spacji wcięcia (na równi z "for row in...")
         if new_processed_frags:
             await asyncio.to_thread(
                 mark_frags_processed_batch, new_processed_frags
@@ -961,6 +1005,23 @@ async def end_bitka(ctx):
     await send_bitka_summary(ctx.channel)
 
 
+@bot.command(name="lastbattle", aliases=["ostatniabitka"])
+async def last_battle(ctx):
+    """Pobiera i wyświetla z bazy danych raport z ostatniej zakończonej bitki."""
+    report_text = await asyncio.to_thread(get_last_battle_report)
+    
+    if not report_text:
+        await ctx.send("🫥 W bazie danych nie ma jeszcze żadnego zapisanego raportu z bitwy.")
+        return
+
+    if len(report_text) > 1900:
+        chunks = [report_text[i : i + 1800] for i in range(0, len(report_text), 1800)]
+        for chunk in chunks:
+            await ctx.send(f"```text\n{chunk}\n```")
+    else:
+        await ctx.send(f"```text\n{report_text}\n```")
+
+
 @bot.command(name="pomoc", aliases=["help"])
 async def pomoc(ctx):
     embed = discord.Embed(
@@ -993,7 +1054,8 @@ async def pomoc(ctx):
         name="⚔️ Kontrola i Podgląd Bitki",
         value=(
             "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trwającej walki.\n"
-            "`!koniecbitki` — Ręcznie kończy aktywne starcie i generuje pełny raport końcowy."
+            "`!koniecbitki` — Ręcznie kończy aktywne starcie i generuje pełny raport końcowy.\n"
+            "`!lastbattle` / `!ostatniabitka` — Wyświetla tekstowy raport z ostatniej odbytej bitwy."
         ),
         inline=False,
     )
@@ -1297,4 +1359,8 @@ async def status(ctx):
     await ctx.send(embed=embed)
 
 
-bot.run(DISCORD_TOKEN)
+# Uruchomienie bota z zabezpieczeniem tekstowym
+if DISCORD_TOKEN:
+    bot.run(DISCORD_TOKEN)
+else:
+    print("❌ Błąd: Brak DISCORD_TOKEN w zmiennych środowiskowych (.env)!")

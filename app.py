@@ -3,7 +3,7 @@ import os
 import re
 import sqlite3
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from threading import Thread
 
 from bs4 import BeautifulSoup
@@ -407,6 +407,70 @@ def get_player_data(player_name):
     return player_row, history_rows, nemesis_info, victim_info
 
 
+def get_player_data_detailed(player_name):
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    ph = "%s" if db_type == "pg" else "?"
+
+    cursor.execute(f"""
+        SELECT player_name, guild_name, kills, deaths
+        FROM player_stats
+        WHERE LOWER(player_name) = LOWER({ph})
+    """, (player_name,))
+    player_row = cursor.fetchone()
+
+    exact_name = player_name
+    if player_row:
+        exact_name = player_row[0]
+    else:
+        cursor.execute(f"SELECT player_name FROM frag_history WHERE LOWER(player_name) = LOWER({ph}) LIMIT 1", (player_name,))
+        found_hist = cursor.fetchone()
+        if found_hist:
+            exact_name = found_hist[0]
+        else:
+            cursor.close()
+            conn.close()
+            return None
+
+    cursor.execute(f"""
+        SELECT entry_text FROM frag_history
+        WHERE LOWER(player_name) = LOWER({ph})
+    """, (exact_name,))
+    all_entries = cursor.fetchall()
+
+    killers_count = {}
+    victims_count = {}
+
+    for (entry,) in all_entries:
+        if "Zginął od" in entry:
+            match = re.search(r"Zginął od ([^(\n]+)", entry)
+            if match:
+                k_name = match.group(1).strip()
+                killers_count[k_name] = killers_count.get(k_name, 0) + 1
+        elif "Zabił" in entry:
+            match = re.search(r"Zabił ([^(\n]+)", entry)
+            if match:
+                v_name = match.group(1).strip()
+                victims_count[v_name] = victims_count.get(v_name, 0) + 1
+
+    sorted_victims = sorted(victims_count.items(), key=lambda x: x[1], reverse=True)
+    sorted_killers = sorted(killers_count.items(), key=lambda x: x[1], reverse=True)
+
+    if not player_row:
+        total_kills = sum(victims_count.values())
+        total_deaths = sum(killers_count.values())
+        player_row = (exact_name, "Bez Gildii", total_kills, total_deaths)
+
+    cursor.close()
+    conn.close()
+    
+    return {
+        "profile": player_row,
+        "victims": sorted_victims,
+        "killers": sorted_killers
+    }
+
+
 def get_guild_confrontations_data(guild_name):
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
@@ -580,7 +644,6 @@ def parse_frag_line(row_element):
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
-        # 1. Pobieranie nicków z linków <a>
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -597,7 +660,6 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # 2. Szukanie WSZYSTKICH poziomów w całej linijce (szukamy wzorca: cyfry + opcjonalny tekst + level)
         levels_found = [
             int(s)
             for s in re.findall(
@@ -605,13 +667,11 @@ def parse_frag_line(row_element):
             )
         ]
 
-        # Jeśli wzorzec z "level" nie zadziałał, wyciągamy po prostu pierwsze dwie duże liczby z tekstu
         if len(levels_found) < 2:
             numbers = [int(s) for s in re.findall(r"\b\d{3,5}\b", row_text)]
             if len(numbers) >= 2:
                 levels_found = numbers
 
-        # Pierwszy level na stronie należy do ofiary, drugi do zabójcy
         if len(levels_found) >= 2:
             victim_lvl = levels_found[0]
             killer_lvl = levels_found[1]
@@ -786,7 +846,6 @@ async def check_frags():
                 killer, killer_lvl, victim, victim_lvl = parse_frag_line(row)
                 if killer and victim:
                     
-                    # --- FILTR ABUSERKI ---
                     if killer_lvl > 0 and victim_lvl > 0:
                         lvl_diff = abs(killer_lvl - victim_lvl)
                         if lvl_diff > MAX_LEVEL_DIFF:
@@ -905,14 +964,18 @@ async def pomoc(ctx):
         name="🛡️ Informacje o Gildiach i Graczach",
         value=(
             "`!gildia <nazwa>` — Wyświetla bilans konfrontacji danej gildii z przeciwnikami.\n"
-            "`!gracz <nick>` — Wyświetla K/D ratio, Nemezis, Ulubioną ofiarę oraz 5 ostatnich starć."
+            "`!gracz <nick>` — Wyświetla K/D ratio, Ostatnie starcia i Nemezis.\n"
+            "`!gracz2 <nick>` — Wyświetla pełną analitykę (kogo zabił ile razy i od kogo padł)."
         ),
         inline=False,
     )
 
     embed.add_field(
-        name="⚔️ Kontrola Bitki",
-        value="`!koniecbitki` / `!endfight` — Ręcznie kończy aktywne starcie i generuje raport.",
+        name="⚔️ Kontrola i Podgląd Bitki",
+        value=(
+            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trwającej walki.\n"
+            "`!koniecbitki` — Ręcznie kończy aktywne starcie i generuje pełny raport końcowy."
+        ),
         inline=False,
     )
 
@@ -1035,6 +1098,101 @@ async def player_info(ctx, *, player_name: str):
             name="Ostatnie starcia", value="Brak wpisów", inline=False
         )
 
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="gracz2", aliases=["szczegoly"])
+async def player_info_detailed(ctx, *, player_name: str):
+    data = await asyncio.to_thread(get_player_data_detailed, player_name)
+    
+    if not data:
+        await ctx.send(f"❌ Nie znaleziono żadnych danych ani historii walk dla gracza **{player_name}**.")
+        return
+
+    exact_name, guild, kills, deaths = data["profile"]
+    kd_ratio = kills / max(deaths, 1)
+
+    embed = discord.Embed(
+        title=f"📊 PEŁNA ANALITYKA WALKI: {exact_name}",
+        description=f"🛡️ Aktualna gildia: **{guild}**",
+        color=discord.Color.dark_purple()
+    )
+    
+    embed.add_field(name="⚔️ Łącznie zabójstw", value=f"`{kills}`", inline=True)
+    embed.add_field(name="💀 Łącznie zgonów", value=f"`{deaths}`", inline=True)
+    embed.add_field(name="📈 Współczynnik K/D", value=f"`{kd_ratio:.2f}`", inline=True)
+
+    if data["victims"]:
+        victims_lines = [f"• **{name}** — zabił go `{count}x`" for name, count in data["victims"][:15]]
+        if len(data["victims"]) > 15:
+            victims_lines.append(f"*...oraz {len(data['victims']) - 15} innych pojedynczych ofiar.*")
+        embed.add_field(name="🎯 KOGO ZABIJAŁ NAJCZĘŚCIEJ", value="\n".join(victims_lines), inline=False)
+    else:
+        embed.add_field(name="🎯 KOGO ZABIJAŁ NAJCZĘŚCIEJ", value="*Ten gracz nie posiada jeszcze zarejestrowanych zabójstw.*", inline=False)
+
+    if data["killers"]:
+        killers_lines = [f"• **{name}** — poległ `{count}x`" for name, count in data["killers"][:15]]
+        if len(data["killers"]) > 15:
+            killers_lines.append(f"*...oraz {len(data['killers']) - 15} innych oprawców.*")
+        embed.add_field(name="🩸 OD KOGO GINĄŁ NAJCZĘŚCIEJ", value="\n".join(killers_lines), inline=False)
+    else:
+        embed.add_field(name="🩸 OD KOGO GINĄŁ NAJCZĘŚCIEJ", value="*Ten gracz posiada czyste konto (0 zgonów).*", inline=False)
+
+    embed.set_footer(text=f"Szczegółowy wyciąg z bazy danych bota • Zgłoszone przez {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="battlelive", aliases=["blive"])
+async def battle_live(ctx):
+    global is_bitka_active, bitka_buffer, bitka_start_time
+
+    if not is_bitka_active or not bitka_buffer:
+        await ctx.send("Status: 🫥 Aktualnie nie ma żadnej aktywnej bitki w toku.")
+        return
+
+    guild_stats = {}
+    player_stats = {}
+
+    for killer, killer_guild, victim, victim_guild in bitka_buffer:
+        for g in [killer_guild, victim_guild]:
+            if g not in guild_stats:
+                guild_stats[g] = [0, 0]
+
+        if killer not in player_stats:
+            player_stats[killer] = [killer_guild, 0]
+
+        guild_stats[killer_guild][0] += 1
+        guild_stats[victim_guild][1] += 1
+        player_stats[killer][1] += 1
+
+    sorted_guilds = sorted(guild_stats.items(), key=lambda x: x[1][0], reverse=True)
+    sorted_players = sorted(player_stats.items(), key=lambda x: x[1][1], reverse=True)
+
+    now = datetime.now()
+    duration = now - bitka_start_time if bitka_start_time else timedelta(0)
+    minutes, seconds = divmod(duration.seconds, 60)
+
+    embed = discord.Embed(
+        title="⚔️ WYNIKI LIVE TRWAJĄCEJ BITKI",
+        description=f"⏱️ Czas trwania starcia: **{minutes}m {seconds}s**\n📉 Łącznie fragów w buforze: `{len(bitka_buffer)}`",
+        color=discord.Color.red()
+    )
+
+    guilds_lines = []
+    for g_name, stat in sorted_guilds[:5]:
+        guilds_lines.append(f"• **{g_name}**: `{stat[0]}` zabójstw / `{stat[1]}` zgonów")
+    
+    if guilds_lines:
+        embed.add_field(name="🛡️ Klasyfikacja Gildii (Zabójstwa / Zgony)", value="\n".join(guilds_lines), inline=False)
+
+    players_lines = []
+    for p_name, data in sorted_players[:5]:
+        players_lines.append(f"• **{p_name}** ({data[0]}) — `{data[1]}` Kills")
+        
+    if players_lines:
+        embed.add_field(name="🔥 Najlepsi Fragerzy Starcia", value="\n".join(players_lines), inline=False)
+
+    embed.set_footer(text=f"Stan na godzinę {now.strftime('%H:%M:%S')} • Użyj !koniecbitki aby zamknąć starcie")
     await ctx.send(embed=embed)
 
 

@@ -728,31 +728,31 @@ async def send_bitka_summary(channel):
     for killer, killer_guild, victim, victim_guild in bitka_buffer:
         for g in [killer_guild, victim_guild]:
             if g not in guild_stats:
-                guild_stats[g] = [0, 0, 0]
+                guild_stats[g] = {"kills": 0, "deaths": 0}
             if g not in guild_members:
                 guild_members[g] = set()
 
         if killer not in player_stats:
-            player_stats[killer] = [killer_guild, 0, 0, 0]
+            player_stats[killer] = {"guild": killer_guild, "kills": 0, "deaths": 0}
         if victim not in player_stats:
-            player_stats[victim] = [victim_guild, 0, 0, 0]
+            player_stats[victim] = {"guild": victim_guild, "kills": 0, "deaths": 0}
 
         guild_members[killer_guild].add(killer)
         guild_members[victim_guild].add(victim)
 
-        guild_stats[killer_guild][0] += 1
-        guild_stats[killer_guild][1] += 1
-        player_stats[killer][1] += 1
-        player_stats[killer][2] += 1
+        # Naliczanie zabójstwa
+        guild_stats[killer_guild]["kills"] += 1
+        player_stats[killer]["kills"] += 1
 
-        guild_stats[victim_guild][2] += 1
-        player_stats[victim][3] += 1
+        # Naliczanie zgonu
+        guild_stats[victim_guild]["deaths"] += 1
+        player_stats[victim]["deaths"] += 1
 
     mvp_player = "Brak"
     max_kills = -1
     for p_name, data in player_stats.items():
-        if data[2] > max_kills:
-            max_kills = data[2]
+        if data["kills"] > max_kills:
+            max_kills = data["kills"]
             mvp_player = p_name
 
     start_str = (
@@ -770,24 +770,30 @@ async def send_bitka_summary(channel):
     )
     report.append("")
     report.append("━" * 60)
-    report.append("GILDIE:")
+    report.append("GILDIE (Zabójstwa | Zgony | Bilans):")
 
     sorted_guilds = sorted(
-        guild_stats.items(), key=lambda x: x[1][0], reverse=True
+        guild_stats.items(), key=lambda x: x[1]["kills"], reverse=True
     )
     for g_name, stat in sorted_guilds:
-        report.append(f"• {g_name:<20} |  {stat[0]}  {stat[1]}  {stat[2]}")
+        k = stat["kills"]
+        d = stat["deaths"]
+        diff = k - d
+        diff_str = f"+{diff}" if diff > 0 else str(diff)
+        report.append(f"• {g_name:<20} |  Zabójstwa: {k:<3} | Zgony: {d:<3} | Bilans: {diff_str}")
 
     report.append("")
     report.append("━" * 60)
-    report.append("GRACZE:")
+    report.append("GRACZE (Zabójstwa | Zgony):")
 
     sorted_players = sorted(
-        player_stats.items(), key=lambda x: x[1][2], reverse=True
+        player_stats.items(), key=lambda x: x[1]["kills"], reverse=True
     )
     for p_name, data in sorted_players:
+        k = data["kills"]
+        d = data["deaths"]
         report.append(
-            f"{p_name} ({data[0]}) |  {data[1]}  {data[2]}  {data[3]}"
+            f"{p_name:<18} ({data['guild']}) | Fragi: {k:<2} | Zgony: {d:<2}"
         )
 
     report.append("━" * 60)
@@ -797,7 +803,7 @@ async def send_bitka_summary(channel):
     report.append("SKŁADY GILDII — OSTATNIA BITWA:")
     report.append("")
 
-    for g_name, members in sorted_guilds:
+    for g_name, _ in sorted_guilds:
         m_list = guild_members[g_name]
         names_str = ", ".join(sorted(m_list))
         report.append(f"• {g_name} ({len(m_list)}): {names_str}")

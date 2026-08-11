@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import urllib.parse
+from zoneinfo import ZoneInfo
 from datetime import datetime, timezone, timedelta
 from threading import Thread
 
@@ -755,12 +756,20 @@ async def send_bitka_summary(channel):
             max_kills = data["kills"]
             mvp_player = p_name
 
-    start_str = (
-        bitka_start_time.strftime("%Y.%m.%d %H:%M:%S")
-        if bitka_start_time
-        else "N/A"
-    )
-    end_str = datetime.now().strftime("%H:%M:%S")
+    # --- KONWERSJA CZASU NA CZAS POLSKI ---
+    tz_pl = ZoneInfo("Europe/Warsaw")
+    
+    if bitka_start_time:
+        # Jeśli bitka_start_time nie ma strefy (naive), nadajemy UTC i konwertujemy na PL
+        if bitka_start_time.tzinfo is None:
+            bitka_start = bitka_start_time.replace(tzinfo=timezone.utc).astimezone(tz_pl)
+        else:
+            bitka_start = bitka_start_time.astimezone(tz_pl)
+        start_str = bitka_start.strftime("%Y.%m.%d %H:%M:%S")
+    else:
+        start_str = "N/A"
+
+    end_str = datetime.now(tz_pl).strftime("%H:%M:%S")
 
     report = []
     report.append("LAST BATTLE REPORT")
@@ -800,7 +809,7 @@ async def send_bitka_summary(channel):
     report.append("")
     report.append(" BATTLE — UCZESTNICY GILDII")
     report.append("━" * 60)
-    report.append("SKŁADY GILDII — OSTATNIA BITWA:")
+    report.append("SKŁARDS GILDII — OSTATNIA BITWA:")
     report.append("")
 
     for g_name, _ in sorted_guilds:
@@ -827,7 +836,6 @@ async def send_bitka_summary(channel):
     pre_bitka_buffer.clear()
     last_frag_time = None
     bitka_start_time = None
-
 
 @tasks.loop(seconds=5)
 async def check_frags():

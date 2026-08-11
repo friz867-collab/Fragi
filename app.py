@@ -678,7 +678,16 @@ def fetch_guild_from_profile(player_name):
                     break
 
         guild_name = re.sub(r'\s+', ' ', guild_name).strip()
-        if "->" in guild_name or len(guild_name) > 30 or not guild_name or guild_name.lower() == "none":
+        
+        # --- ZABEZPIECZENIE: FILTRACJA ŚMIECI / NICKÓW JAKO GILDII ---
+        if (
+            len(guild_name) > 22 
+            or "->" in guild_name 
+            or not guild_name 
+            or guild_name.lower() == "none"
+            or " is " in guild_name.lower()
+            or " killer " in guild_name.lower()
+        ):
             guild_name = "Bez Gildii"
 
         player_guild_cache[player_name] = guild_name
@@ -912,12 +921,9 @@ async def check_frags():
                 killer, killer_lvl, victim, victim_lvl = parse_frag_line(row)
                 if killer and victim:
                     
-                    print(f"🔍 [PARSER LOG] Wykryto: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl)")
-                    
                     if killer_lvl > 0 and victim_lvl > 0:
                         lvl_diff = abs(killer_lvl - victim_lvl)
                         if lvl_diff > MAX_LEVEL_DIFF:
-                            print(f"🛑 [ABUSE FILTER] ZABLOKOWANO FRAG: Różnica {lvl_diff} lvl (Max {MAX_LEVEL_DIFF})")
                             await asyncio.to_thread(log_abuse, killer, killer_lvl, victim, victim_lvl)
                             new_processed_frags.append(row_text)
                             continue
@@ -1007,7 +1013,6 @@ class GuildButton(discord.ui.Button):
         self.guild_name = guild_name
 
     async def callback(self, interaction: discord.Interaction):
-        # Zapobiega błędowi "Aplikacja nie odpowiedziała" wydłużając czas odpowiedzi
         await interaction.response.defer(ephemeral=True)
         
         exact_guild, conf_data, total_k, total_d = await asyncio.to_thread(
@@ -1040,14 +1045,13 @@ class GuildButton(discord.ui.Button):
         else:
             embed.add_field(name="👥 Statystyki Członków Gildii", value="*Brak przypisanych aktywnych graczy w bazie.*", inline=False)
 
-        # Odpowiedź wysyłana w trybie followup
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class GuildTopView(discord.ui.View):
     def __init__(self, guilds_list):
         super().__init__(timeout=180)
-        for guild_name, _, _ in guilds_list[:5]:  # Ograniczenie do top 5 dla zachowania limitów Discorda
+        for guild_name, _, _ in guilds_list[:5]:
             self.add_item(GuildButton(guild_name))
 
 

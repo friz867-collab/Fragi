@@ -899,23 +899,25 @@ async def check_frags():
 
                         if len(pre_bitka_buffer) >= 5:
                             is_bitka_active = True
-                            bitka_start_time = datetime.now()
+                            bitka_start_time = datetime.now(timezone.utc)
                             bitka_buffer = list(pre_bitka_buffer)
                             pre_bitka_buffer.clear()
                             await send_bitka_start(channel)
 
                 new_processed_frags.append(row_text)
 
-        if new_processed_frags:
+      if new_processed_frags:
             await asyncio.to_thread(
                 mark_frags_processed_batch, new_processed_frags
             )
 
+        # === POPRAWIONE NA NOW(TIMEZONE.UTC) ===
         if not is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() > 180:
                 pre_bitka_buffer.clear()
                 last_frag_time = None
 
+        # === POPRAWIONE NA NOW(TIMEZONE.UTC) ===
         if is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() >= 600:
                 await send_bitka_summary(channel)

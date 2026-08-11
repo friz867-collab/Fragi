@@ -671,7 +671,7 @@ def fetch_guild_from_profile(player_name):
         return "Bez Gildii"
 
 
-# === ZMODYFIKOWANY I PRECYZYJNY PARSER LINII FRAGA ===
+# === PARSER LINII FRAGA ===
 def parse_frag_line(row_element):
     try:
         row_text = " ".join(row_element.text.split())
@@ -679,7 +679,6 @@ def parse_frag_line(row_element):
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
-        # Wyciąganie nicków z linków profilowych
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -696,7 +695,6 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # Łapiemy liczby tylko z nawiasów przy nickach
         levels_found = [int(lvl) for lvl in re.findall(r'(?:\[|\()(\d+)(?:\]|\))', row_text)]
 
         if len(levels_found) >= 2:
@@ -747,25 +745,18 @@ async def send_bitka_summary(channel):
 
     guild_stats = {}
     player_stats = {}
-    guild_members = {}
     
-    # Słownik do zliczania bezpośrednich starć graczy (Kto -> Kogo)
     direct_matchups = {}
 
     for killer, killer_guild, victim, victim_guild in bitka_buffer:
         for g in [killer_guild, victim_guild]:
             if g not in guild_stats:
                 guild_stats[g] = {"kills": 0, "deaths": 0}
-            if g not in guild_members:
-                guild_members[g] = set()
 
         if killer not in player_stats:
             player_stats[killer] = {"guild": killer_guild, "kills": 0, "deaths": 0}
         if victim not in player_stats:
             player_stats[victim] = {"guild": victim_guild, "kills": 0, "deaths": 0}
-
-        guild_members[killer_guild].add(killer)
-        guild_members[victim_guild].add(victim)
 
         guild_stats[killer_guild]["kills"] += 1
         player_stats[killer]["kills"] += 1
@@ -773,7 +764,6 @@ async def send_bitka_summary(channel):
         guild_stats[victim_guild]["deaths"] += 1
         player_stats[victim]["deaths"] += 1
         
-        # Logowanie bezpośredniego pojedynku
         matchup_key = (killer, killer_guild, victim, victim_guild)
         direct_matchups[matchup_key] = direct_matchups.get(matchup_key, 0) + 1
 
@@ -797,15 +787,15 @@ async def send_bitka_summary(channel):
 
     end_str = datetime.now(tz_pl).strftime("%H:%M:%S")
 
+    # ESTETYCZNY NOWY UKŁAD RAMKOWY RAPORTU
     report = []
-    report.append("LAST BATTLE REPORT")
-    report.append("━" * 60)
-    report.append(
-        f"PODSUMOWANIE OSTATNIEJ BITKI {start_str} → {end_str} Fragi: {total_frags} MVP: {mvp_player}"
-    )
+    report.append("┌──────────────────────────────────────────────────────────┐")
+    report.append(f"│ BATTLE REPORT  {start_str} → {end_str} │")
+    report.append(f"│ Łącznie fragów: {total_frags:<5} | MVP: {mvp_player:<20} │")
+    report.append("└──────────────────────────────────────────────────────────┘")
     report.append("")
-    report.append("━" * 60)
-    report.append("GILDIE (Zabójstwa | Zgony | Bilans):")
+    report.append("📊 PODSUMOWANIE GILDII:")
+    report.append("────────────────────────────────────────────────────────────")
 
     sorted_guilds = sorted(
         guild_stats.items(), key=lambda x: x[1]["kills"], reverse=True
@@ -815,59 +805,50 @@ async def send_bitka_summary(channel):
         d = stat["deaths"]
         diff = k - d
         diff_str = f"+{diff}" if diff > 0 else str(diff)
-        report.append(f"• {g_name:<20} |  Zabójstwa: {k:<3} | Zgony: {d:<3} | Bilans: {diff_str}")
+        report.append(f"  {g_name:<18} ➔  Kills: {k:<3} │ Deaths: {d:<3} │ [ {diff_str:>4} ]")
 
     report.append("")
-    report.append("━" * 60)
-    report.append("GRACZE (Zabójstwa | Zgony):")
+    report.append("👤 TOP FRAGERZY:")
+    report.append("────────────────────────────────────────────────────────────")
 
     sorted_players = sorted(
         player_stats.items(), key=lambda x: x[1]["kills"], reverse=True
     )
-    for p_name, data in sorted_players:
+    for p_name, data in sorted_players[:15]:
         k = data["kills"]
         d = data["deaths"]
-        report.append(
-            f"{p_name:<18} ({data['guild']}) | Fragi: {k:<2} | Zgony: {d:<2}"
-        )
+        report.append(f"  {p_name:<15} [{data['guild']:^12}] ➔  Kills: {k:<2} │ Deaths: {d:<2}")
 
-    report.append("━" * 60)
     report.append("")
-    report.append(" BATTLE — UCZESTNICY GILDII")
-    report.append("━" * 60)
-    report.append("SKŁARDS GILDII — OSTATNIA BITWA:")
-    report.append("")
-
-    for g_name, _ in sorted_guilds:
-        m_list = guild_members[g_name]
-        names_str = ", ".join(sorted(m_list))
-        report.append(f"• {g_name} ({len(m_list)}): {names_str}")
-        report.append("")
-
-    # === NOWA SEKĆJA: KTO KOGO ZABIŁ W BITWIE ===
-    report.append("━" * 60)
-    report.append(" SZCZEGÓŁOWA LISTA FRAGÓW (Kto -> Kogo)")
-    report.append("━" * 60)
+    report.append("⚔️ REJESTR WALKI (Kto ➔ Kogo):")
+    report.append("────────────────────────────────────────────────────────────")
     
     sorted_matchups = sorted(direct_matchups.items(), key=lambda x: x[1], reverse=True)
     for (k, kg, v, vg), count in sorted_matchups:
-        count_str = f"({count}x)" if count > 1 else ""
-        report.append(f"• {k} ({kg}) ⚔️ {v} ({vg}) {count_str}")
+        count_str = f"x{count}" if count > 1 else "  "
+        report.append(f"  {k:<14} ({count_str.strip():<4}) ➔  {v:<14}")
         
-    report.append("━" * 60)
+    report.append("────────────────────────────────────────────────────────────")
 
     full_text = "\n".join(report)
 
     await asyncio.to_thread(save_battle_report, full_text)
 
-    if len(full_text) > 1900:
-        chunks = [
-            full_text[i : i + 1800] for i in range(0, len(full_text), 1800)
-        ]
-        for chunk in chunks:
-            await channel.send(f"```text\n{chunk}\n```")
+    # Bezpieczne dzielenie przy długich tekstach
+    final_output = f"```text\n{full_text}\n```"
+    if len(final_output) <= 2000:
+        await channel.send(final_output)
     else:
-        await channel.send(f"```text\n{full_text}\n```")
+        current_chunk = "```text\n"
+        for line in report:
+            if len(current_chunk) + len(line) + 2 > 1990:
+                current_chunk += "```"
+                await channel.send(current_chunk)
+                current_chunk = "```text\n"
+            current_chunk += line + "\n"
+        if current_chunk != "```text\n":
+            current_chunk += "```"
+            await channel.send(current_chunk)
 
     is_bitka_active = False
     bitka_buffer.clear()
@@ -901,13 +882,9 @@ async def check_frags():
                 killer, killer_lvl, victim, victim_lvl = parse_frag_line(row)
                 if killer and victim:
                     
-                    print(f"🔍 [PARSER LOG] Wykryto: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl)")
-                    
-                    # Weryfikacja filtru poziomów
                     if killer_lvl > 0 and victim_lvl > 0:
                         lvl_diff = abs(killer_lvl - victim_lvl)
                         if lvl_diff > MAX_LEVEL_DIFF:
-                            print(f"🛑 [ABUSE FILTER] ZABLOKOWANO FRAG: Różnica {lvl_diff} lvl (Max {MAX_LEVEL_DIFF})")
                             await asyncio.to_thread(log_abuse, killer, killer_lvl, victim, victim_lvl)
                             new_processed_frags.append(row_text)
                             continue
@@ -984,8 +961,72 @@ async def on_ready():
         check_frags.start()
 
 
-# === KOMENDY BOTA ===
+# ==========================================
+# WIDOKI INTERAKTYWNE DLA KOMENDY !TOP
+# ==========================================
 
+class GuildDetailView(discord.ui.View):
+    """Widok drugiego poziomu - wyświetla członków po kliknięciu przycisku."""
+    def __init__(self, guild_name, player_stats):
+        super().__init__(timeout=60)
+        self.guild_name = guild_name
+        self.player_stats = player_stats
+
+    @discord.ui.button(label="👤 Pokaż członków", style=discord.ButtonStyle.success, custom_id="show_members")
+    async def show_members_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_players = {p: d for p, d in self.player_stats.items() if d["guild"].lower() == self.guild_name.lower()}
+        
+        if not guild_players:
+            await interaction.response.send_message(f"❌ Nie znaleziono szczegółowych danych o członkach gildii {self.guild_name} w tym starciu.", ephemeral=True)
+            return
+
+        sorted_gp = sorted(guild_players.items(), key=lambda x: x[1]["kills"], reverse=True)
+        
+        sub_report = []
+        sub_report.append("┌──────────────────────────────────────────────────────────┐")
+        sub_report.append(f"│ CZŁONKOWIE GILDII: {self.guild_name:<37} │")
+        sub_report.append("├──────────────────────────────────────────────────────────┤")
+        for p_name, data in sorted_gp:
+            sub_report.append(f"  {p_name:<15} ➔  Kills: {data['kills']:<2} │ Deaths: {data['deaths']:<2}")
+        sub_report.append("└──────────────────────────────────────────────────────────┘")
+        
+        response_text = "```text\n" + "\n".join(sub_report) + "\n```"
+        await interaction.response.send_message(response_text)
+
+class GuildButtonsView(discord.ui.View):
+    """Widok pierwszego poziomu - przyciski z nazwami gildii z ostatniej bitwy."""
+    def __init__(self, guilds, player_stats, guild_raw_stats):
+        super().__init__(timeout=60)
+        self.player_stats = player_stats
+        self.guild_raw_stats = guild_raw_stats
+        
+        # Generujemy maksymalnie 5 przycisków gildii, aby zmieściły się w jednym rzędzie Discorda
+        for g_name in guilds[:5]:  
+            button = discord.ui.Button(label=g_name, style=discord.ButtonStyle.blurple, custom_id=f"guild_{g_name}")
+            button.callback = self.create_callback(g_name)
+            self.add_item(button)
+
+    def create_callback(self, g_name):
+        async def button_callback(interaction: discord.Interaction):
+            stats = self.guild_raw_stats.get(g_name, {"kills": "0", "deaths": "0", "diff": "0"})
+            
+            stats_report = []
+            stats_report.append("┌──────────────────────────────────────────────────────────┐")
+            stats_report.append(f"│ PODSUMOWANIE GILDII: {g_name:<35} │")
+            stats_report.append("├──────────────────────────────────────────────────────────┤")
+            stats_report.append(f"  Zabójstwa (Kills):  {stats['kills']}")
+            stats_report.append(f"  Śmierci (Deaths):   {stats['deaths']}")
+            stats_report.append(f"  Bilans walki:       [ {stats['diff']} ]")
+            stats_report.append("└──────────────────────────────────────────────────────────┘")
+            
+            main_text = "```text\n" + "\n".join(stats_report) + "\n```"
+            next_view = GuildDetailView(g_name, self.player_stats)
+            await interaction.response.send_message(main_text, view=next_view)
+            
+        return button_callback
+
+
+# === KOMENDY BOTA ===
 
 @bot.command(name="koniecbitki", aliases=["endbitka"])
 async def end_bitka(ctx):
@@ -1026,7 +1067,7 @@ async def pomoc(ctx):
     embed.add_field(
         name="🏆 Rankingi i Statystyki",
         value=(
-            "`!top` — Wyświetla TOP 10 najlepszych gildii według zabójstw.\n"
+            "`!top` — Wyświetla menu interaktywne gildii z ostatniej zarejestrowanej bitwy.\n"
             "`!topgracze` — Wyświetla TOP 10 graczy z największą liczbą zabić ogółem.\n"
             "`!top24h` — Wyświetla TOP 5 graczy z największą liczbą zabójstw w ostatnich 24h."
         ),
@@ -1046,7 +1087,7 @@ async def pomoc(ctx):
     embed.add_field(
         name="⚔️ Kontrola i Podgląd Bitki",
         value=(
-            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trвающей walki.\n"
+            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trwającej walki.\n"
             "`!koniecbitki` — Ręcznie kończy aktywne starcie i generuje pełny raport końcowy.\n"
             "`!lastbattle` / `!ostatniabitka` — Wyświetla tekstowy raport z ostatniej odbytej bitwy."
         ),
@@ -1068,20 +1109,53 @@ async def pomoc(ctx):
 
 @bot.command(name="top")
 async def top_guilds(ctx):
-    top_guilds_list = await asyncio.to_thread(get_top_guilds_data)
-    if not top_guilds_list:
-        await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
-        return
+    """Komenda !top zintegrowana z interaktywnymi, wielopoziomowymi przyciskami."""
+    try:
+        report_text = await asyncio.to_thread(get_last_battle_report)
+        if not report_text:
+            await ctx.send("❌ Brak danych o bitwach w bazie. Wykonaj najpierw jakąś walkę.")
+            return
 
-    embed = discord.Embed(title="🏆 Ranking Gildii", color=discord.Color.gold())
-    for guild, kills, deaths in top_guilds_list:
-        embed.add_field(
-            name=f"🛡️ {guild}",
-            value=f"Kills: `{kills}` | Deaths: `{deaths}`",
-            inline=False,
-        )
+        guilds_found = []
+        guild_raw_stats = {}
+        player_stats = {}
+        
+        # Parsowanie danych o gildiach z zapisanego raportu tekstowego
+        guild_lines = re.findall(r"\s+([A-Za-z0-9 ]+?)\s+➔\s+Kills:\s*(\d+)\s*│\s*Deaths:\s*(\d+)\s*│\s*\[\s*([+-]?\d+)\s*\]", report_text)
+        for g_name, kills, deaths, diff in guild_lines:
+            g_clean = g_name.strip()
+            guilds_found.append(g_clean)
+            guild_raw_stats[g_clean] = {
+                "kills": kills.strip(),
+                "deaths": deaths.strip(),
+                "diff": diff.strip()
+            }
 
-    await ctx.send(embed=embed)
+        # Parsowanie danych o poszczególnych graczach z zapisanego raportu tekstowego
+        player_lines = re.findall(r"\s+([A-Za-z0-9 ]+?)\s+\[\s*([A-Za-z0-9 ]+?)\s*\]\s+➔\s+Kills:\s*(\d+)\s*│\s*Deaths:\s*(\d+)", report_text)
+        for p_name, g_name, kills, deaths in player_lines:
+            player_stats[p_name.strip()] = {
+                "guild": g_name.strip(),
+                "kills": int(kills),
+                "deaths": int(deaths)
+            }
+
+        # Wycinamy tylko pierwszą część nagłówka do głównej wiadomości komendy
+        lines = report_text.split("\n")
+        overview = []
+        for line in lines:
+            overview.append(line)
+            if "📊 PODSUMOWANIE GILDII:" in line:
+                break
+                
+        main_output = "```text\n" + "\n".join(overview) + "\n   Wybierz gildię z przycisków poniżej:\n```"
+        
+        view = GuildButtonsView(guilds_found, player_stats, guild_raw_stats)
+        await ctx.send(main_output, view=view)
+
+    except Exception as e:
+        print(f"Błąd komendy !top: {e}")
+        await ctx.send("❌ Wystąpił błąd podczas generowania menu interaktywnego.")
 
 
 @bot.command(name="topgracze")

@@ -688,7 +688,7 @@ def fetch_guild_from_profile(player_name):
         return "Bez Gildii"
 
 
-# === ZMODYFIKOWANY I PRECYZYJNY PARSER LINII FRAGA ===
+# === PARSER LINII FRAGA ===
 def parse_frag_line(row_element):
     try:
         row_text = " ".join(row_element.text.split())
@@ -696,7 +696,6 @@ def parse_frag_line(row_element):
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 
-        # Wyciąganie nicków z linków profilowych
         char_links = []
         for a in row_element.find_all("a", href=True):
             href = a["href"].lower()
@@ -713,7 +712,6 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # Łapiemy liczby tylko z nawiasów przy nickach
         levels_found = [int(lvl) for lvl in re.findall(r'(?:\[|\()(\d+)(?:\]|\))', row_text)]
 
         if len(levels_found) >= 2:
@@ -765,8 +763,6 @@ async def send_bitka_summary(channel):
     guild_stats = {}
     player_stats = {}
     guild_members = {}
-    
-    # Słownik do zliczania bezpośrednich starć graczy (Kto -> Kogo)
     direct_matchups = {}
 
     for killer, killer_guild, victim, victim_guild in bitka_buffer:
@@ -790,7 +786,6 @@ async def send_bitka_summary(channel):
         guild_stats[victim_guild]["deaths"] += 1
         player_stats[victim]["deaths"] += 1
         
-        # Logowanie bezpośredniego pojedynku
         matchup_key = (killer, killer_guild, victim, victim_guild)
         direct_matchups[matchup_key] = direct_matchups.get(matchup_key, 0) + 1
 
@@ -861,7 +856,6 @@ async def send_bitka_summary(channel):
         report.append(f"• {g_name} ({len(m_list)}): {names_str}")
         report.append("")
 
-    # === NOWA SEKĆJA: KTO KOGO ZABIŁ W BITWIE ===
     report.append("━" * 60)
     report.append(" SZCZEGÓŁOWA LISTA FRAGÓW (Kto -> Kogo)")
     report.append("━" * 60)
@@ -920,7 +914,6 @@ async def check_frags():
                     
                     print(f"🔍 [PARSER LOG] Wykryto: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl)")
                     
-                    # Weryfikacja filtru poziomów
                     if killer_lvl > 0 and victim_lvl > 0:
                         lvl_diff = abs(killer_lvl - victim_lvl)
                         if lvl_diff > MAX_LEVEL_DIFF:
@@ -1001,11 +994,10 @@ async def on_ready():
         check_frags.start()
 
 
-# === KLASY DLA PRZYCISKÓW INTERAKTYWNYCH W RANKINGU GILDII ===
+# === KLASY DLA PRZYCISKÓW Z ZABEZPIECZENIEM DEFER ===
 
 class GuildButton(discord.ui.Button):
     def __init__(self, guild_name):
-        # Discord ogranicza label przycisku do 80 znaków - w razie potrzeby bezpiecznie go skracamy
         short_label = guild_name[:30] + "..." if len(guild_name) > 30 else guild_name
         super().__init__(
             label=short_label,
@@ -1015,19 +1007,20 @@ class GuildButton(discord.ui.Button):
         self.guild_name = guild_name
 
     async def callback(self, interaction: discord.Interaction):
-        # Pobieramy pełne statystyki konfrontacji dla wybranej gildii
+        # Zapobiega błędowi "Aplikacja nie odpowiedziała" wydłużając czas odpowiedzi
+        await interaction.response.defer(ephemeral=True)
+        
         exact_guild, conf_data, total_k, total_d = await asyncio.to_thread(
             get_guild_confrontations_data, self.guild_name
         )
         
         if not exact_guild:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"❌ Nie udało się odnaleźć szczegółowych danych dla gildii **{self.guild_name}**.", 
                 ephemeral=True
             )
             return
 
-        # Generujemy czytelny Embed ze statystykami ogólnymi wybranej gildii
         embed = discord.Embed(
             title=f"🛡️ Statystyki Gildii: {exact_guild}", 
             color=discord.Color.purple()
@@ -1038,7 +1031,6 @@ class GuildButton(discord.ui.Button):
             inline=False,
         )
 
-        # Pobieramy oraz dołączamy listę wszystkich członków tej gildii z ich indywidualnymi K/D
         members = await asyncio.to_thread(get_guild_members_stats, exact_guild)
         if members:
             members_lines = [f"• **{name}** (Kills: `{k}` | Deaths: `{d}`)" for name, k, d in members[:15]]
@@ -1048,19 +1040,18 @@ class GuildButton(discord.ui.Button):
         else:
             embed.add_field(name="👥 Statystyki Członków Gildii", value="*Brak przypisanych aktywnych graczy w bazie.*", inline=False)
 
-        # Odpowiedź wysyłana jest jako ephemeral=True (widoczna tylko dla klikającego), aby nie śmiecić kanału
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Odpowiedź wysyłana w trybie followup
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class GuildTopView(discord.ui.View):
     def __init__(self, guilds_list):
-        super().__init__(timeout=180)  # Przyciski pozostaną aktywne przez 3 minuty od wywołania komendy
-        for guild_name, _, _ in guilds_list[:5]:  # Ograniczamy do pierwszych 5 gildii, by zachować pełną przejrzystość
+        super().__init__(timeout=180)
+        for guild_name, _, _ in guilds_list[:5]:  # Ograniczenie do top 5 dla zachowania limitów Discorda
             self.add_item(GuildButton(guild_name))
 
 
 # === KOMENDY BOTA ===
-
 
 @bot.command(name="koniecbitki", aliases=["endbitka"])
 async def end_bitka(ctx):
@@ -1097,7 +1088,6 @@ async def pomoc(ctx):
         description="Wszystkie komendy rozpoczynają się od przedrostka `!`",
         color=discord.Color.blue(),
     )
-
     embed.add_field(
         name="🏆 Rankingi i Statystyki",
         value=(
@@ -1107,7 +1097,6 @@ async def pomoc(ctx):
         ),
         inline=False,
     )
-
     embed.add_field(
         name="🛡️ Informacje o Gildiach i Graczach",
         value=(
@@ -1117,17 +1106,15 @@ async def pomoc(ctx):
         ),
         inline=False,
     )
-
     embed.add_field(
         name="⚔️ Kontrola i Podgląd Bitki",
         value=(
-            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trwającej walki.\n"
+            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trвающей walki.\n"
             "`!koniecbitki` — Ręcznie kończy aktywne starcie i generuje pełny raport końcowy.\n"
             "`!lastbattle` / `!ostatniabitka` — Wyświetla tekstowy raport z ostatniej odbytej bitwy."
         ),
         inline=False,
     )
-
     embed.add_field(
         name="⚙️ System i Informacje",
         value=(
@@ -1136,7 +1123,6 @@ async def pomoc(ctx):
         ),
         inline=False,
     )
-
     embed.set_footer(text=f"Wywołano przez {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
@@ -1148,7 +1134,6 @@ async def top_guilds(ctx):
         await ctx.send("Brak zarejestrowanych zabójstw w bazie danych.")
         return
 
-    # Przywrócony oryginalny, estetyczny wygląd w formie Embed
     embed = discord.Embed(title="🏆 Ranking Gildii", color=discord.Color.gold())
     for guild, kills, deaths in top_guilds_list:
         embed.add_field(
@@ -1157,10 +1142,7 @@ async def top_guilds(ctx):
             inline=False,
         )
 
-    # Inicjalizacja widoku interaktywnych przycisków
     view = GuildTopView(top_guilds_list)
-    
-    # Wysłanie wiadomości zawierającej zarówno Embed, jak i Przyciski dolne
     await ctx.send(embed=embed, view=view)
 
 
@@ -1176,13 +1158,7 @@ async def top_players(ctx):
     )
     for idx, (player, guild, kills, deaths) in enumerate(top_list, 1):
         medal = (
-            "🥇"
-            if idx == 1
-            else "🥈"
-            if idx == 2
-            else "🥉"
-            if idx == 3
-            else f"#{idx}"
+            "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"#{idx}"
         )
         embed.add_field(
             name=f"{medal} {player} ({guild})",
@@ -1205,13 +1181,7 @@ async def top_players_24h(ctx):
     )
     for idx, (player, kills_24h) in enumerate(top_list, 1):
         medal = (
-            "🥇"
-            if idx == 1
-            else "🥈"
-            if idx == 2
-            else "🥉"
-            if idx == 3
-            else f"#{idx}"
+            "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"#{idx}"
         )
         embed.add_field(
             name=f"{medal} {player}",
@@ -1239,7 +1209,6 @@ async def player_info(ctx, *, player_name: str):
     embed.add_field(
         name="Kills / Deaths", value=f"`{kills}` / `{deaths}`", inline=True
     )
-
     embed.add_field(name="👿 Nemezis", value=nemesis, inline=False)
     embed.add_field(name="🎯 Ulubiona Ofiara", value=victim, inline=False)
 

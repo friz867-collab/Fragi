@@ -23,9 +23,9 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # === KONFIGURACJA FILTRU ===
-MAX_LEVEL_DIFF = 500  # Maksymalna różnica leveli[cite: 2]
+MAX_LEVEL_DIFF = 500  # Maksymalna różnica leveli
 
-# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===[cite: 2]
+# === OBSŁUGA BAZY DANYCH (POSTGRESQL / SQLITE FALLBACK) ===
 
 def get_db_connection():
     """Łączy z PostgreSQL na Renderze lub z SQLite lokalnie."""
@@ -607,7 +607,7 @@ def keep_alive():
 keep_alive()
 
 # === KONFIGURACJA BOTA ===
-URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"[cite: 2]
+URL_FRAGS = "http://dblots.org.pl/lastfrags.php?lang=en&s=classic"
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -730,7 +730,7 @@ async def send_bitka_start(channel):
     embed.add_field(
         name="Początkowe starcia", value="\n".join(lines), inline=False
     )
-    embed.set_footer(text=f"Filtr nadużyć włączony: max {MAX_LEVEL_DIFF} lvl różnicy")
+    embed.set_footer(text=f"Filtr nadużycia włączony: max {MAX_LEVEL_DIFF} lvl różnicy")
 
     await channel.send(
         content=f"🚨 {role_mention} Właśnie trwa bitka!", embed=embed
@@ -828,7 +828,7 @@ async def send_bitka_summary(channel):
     report.append("")
     report.append(" BATTLE — UCZESTNICY GILDII")
     report.append("━" * 60)
-    report.append("SKŁADY GILDII — OSTATNIA BITWA:")
+    report.append("SKŁARDS GILDII — OSTATNIA BITWA:")
     report.append("")
 
     for g_name, _ in sorted_guilds:

@@ -696,7 +696,7 @@ def parse_frag_line(row_element):
         if len(char_links) >= 2:
             victim, killer = char_links[0], char_links[1]
 
-        # POPRAWKA FILTRU: Łapiemy liczby tylko z nawiasów przy nickach, ignorując datę/czas wiersza
+        # Łapiemy liczby tylko z nawiasów przy nickach
         levels_found = [int(lvl) for lvl in re.findall(r'(?:\[|\()(\d+)(?:\]|\))', row_text)]
 
         if len(levels_found) >= 2:
@@ -1029,7 +1029,7 @@ async def pomoc(ctx):
     embed.add_field(
         name="⚔️ Kontrola i Podgląd Bitki",
         value=(
-            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trwającej walki.\n"
+            "`!battlelive` / `!blive` — Pokazuje bieżące statystyki i punktację trвающей walki.\n"
             "`!koniecbitki` — Ręcznie kończy aktywne starcie i generuje pełny raport końcowy.\n"
             "`!lastbattle` / `!ostatniabitka` — Wyświetla tekstowy raport z ostatniej odbytej bitwy."
         ),

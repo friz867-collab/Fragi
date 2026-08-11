@@ -863,7 +863,6 @@ async def check_frags():
                 killer, killer_lvl, victim, victim_lvl = parse_frag_line(row)
                 if killer and victim:
                     
-                    # LOG DO KONSOLI RENDERA
                     print(f"🔍 [PARSER LOG] Wykryto: {killer} ({killer_lvl} lvl) ⚔️ {victim} ({victim_lvl} lvl)")
                     
                     if killer_lvl > 0 and victim_lvl > 0:
@@ -906,25 +905,23 @@ async def check_frags():
 
                 new_processed_frags.append(row_text)
 
-      if new_processed_frags:
+        # Te cztery bloki poniżej muszą mieć dokładnie 8 spacji wcięcia (na równi z "for row in...")
+        if new_processed_frags:
             await asyncio.to_thread(
                 mark_frags_processed_batch, new_processed_frags
             )
 
-        # === POPRAWIONE NA NOW(TIMEZONE.UTC) ===
         if not is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() > 180:
                 pre_bitka_buffer.clear()
                 last_frag_time = None
 
-        # === POPRAWIONE NA NOW(TIMEZONE.UTC) ===
         if is_bitka_active and last_frag_time:
             if (now - last_frag_time).total_seconds() >= 600:
                 await send_bitka_summary(channel)
 
     except Exception as e:
         print(f"Błąd pętli: {e}")
-
 
 @bot.event
 async def on_ready():

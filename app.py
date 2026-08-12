@@ -698,10 +698,16 @@ def fetch_guild_from_profile(player_name):
 
 
 # === PARSER LINII FRAGA ===
+# === PARSER LINII FRAGA ===
 def parse_frag_line(row_element):
     try:
         row_text = " ".join(row_element.text.split())
         
+        # Oczyszczanie tekstu ze śmieci Discorda (reakcje, przyciski, znaczniki czasu)
+        row_text = re.sub(r':[\w\-]+:\s*Kliknij, aby zareagować', '', row_text)
+        row_text = re.sub(r'Dodaj reakcję|Odpowiedz|Przekaż dalej|Więcej', '', row_text)
+        row_text = re.sub(r'\[\d{2}:\d{2}\].*?(?=[A-Za-z0-9]|$)', '', row_text)
+
         killer, victim = None, None
         killer_lvl, victim_lvl = 0, 0
 

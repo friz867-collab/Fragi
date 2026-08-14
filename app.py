@@ -648,6 +648,7 @@ bitka_start_time = None
 
 # === PARSER GILDII ===
 # === PARSER GILDII ===
+# === PARSER GILDII ===
 def fetch_guild_from_profile(player_name):
     player_name = player_name.strip()
     if not player_name or len(player_name) > 25 or "->" in player_name:
@@ -666,7 +667,7 @@ def fetch_guild_from_profile(player_name):
         soup = BeautifulSoup(res.text, "html.parser")
         guild_name = "Bez Gildii"
 
-        # Przeszukiwanie wszystkich wierszy i komórek tabeli w poszukiwaniu informacji o gildii
+        # Uniwersalne przeszukiwanie tabeli profilu pod kątem gildii
         for tr in soup.find_all("tr"):
             tds = tr.find_all(["td", "th"])
             for i, td in enumerate(tds):
@@ -683,14 +684,12 @@ def fetch_guild_from_profile(player_name):
 
         guild_name = re.sub(r'\s+', ' ', guild_name).strip()
         
-        # --- ZABEZPIECZENIE: FILTRACJA ŚMIECI / NICKÓW JAKO GILDII ---
         if (
-            len(guild_name) > 22 
+            len(guild_name) > 30 
             or "->" in guild_name 
             or not guild_name 
             or guild_name.lower() == "none"
             or " is " in guild_name.lower()
-            or " killer " in guild_name.lower()
         ):
             guild_name = "Bez Gildii"
 

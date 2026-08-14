@@ -647,6 +647,7 @@ bitka_start_time = None
 
 
 # === PARSER GILDII ===
+# === PARSER GILDII ===
 def fetch_guild_from_profile(player_name):
     player_name = player_name.strip()
     if not player_name or len(player_name) > 25 or "->" in player_name:
@@ -665,17 +666,20 @@ def fetch_guild_from_profile(player_name):
         soup = BeautifulSoup(res.text, "html.parser")
         guild_name = "Bez Gildii"
 
+        # Przeszukiwanie wszystkich wierszy i komórek tabeli w poszukiwaniu informacji o gildii
         for tr in soup.find_all("tr"):
-            tds = tr.find_all("td")
-            if len(tds) >= 2:
-                first_td_text = tds[0].get_text(strip=True).lower()
-                if "guild:" in first_td_text:
-                    raw_val = tds[1].get_text(strip=True)
+            tds = tr.find_all(["td", "th"])
+            for i, td in enumerate(tds):
+                text_lower = td.get_text(strip=True).lower()
+                if "guild" in text_lower and i + 1 < len(tds):
+                    raw_val = tds[i + 1].get_text(strip=True)
                     if " of " in raw_val:
                         guild_name = raw_val.split(" of ")[-1].strip()
                     elif raw_val and "none" not in raw_val.lower():
                         guild_name = raw_val
                     break
+            if guild_name != "Bez Gildii":
+                break
 
         guild_name = re.sub(r'\s+', ' ', guild_name).strip()
         
@@ -695,7 +699,6 @@ def fetch_guild_from_profile(player_name):
     except Exception as e:
         print(f"Błąd pobierania gildii dla {player_name}: {e}")
         return "Bez Gildii"
-
 
 # === PARSER LINII FRAGA ===
 # === PARSER LINII FRAGA ===
